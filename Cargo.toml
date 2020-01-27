@@ -1,0 +1,20 @@
+[package]
+name = "stoicheia"
+version = "0.1.0"
+authors = ["Sean Gallagher <stgallag@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rocket = "0.4.2"
+rocket_contrib = "0.4.2"
+serde_json = "1.0.45"
+ndarray = { version= "0.13.0", features = ["serde"] }
+bincode = "1.2.1"
+serde_derive = "1.0.104"
+serde = "1.0.104"
+failure = "0.1.6"
+itertools = "0.8.2"
+rusqlite = "0.21.0"
+thread_local = "1.0.1"
