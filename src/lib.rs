@@ -1,4 +1,4 @@
-#![feature(is_sorted)]
+#![feature(is_sorted, result_cloned)]
 #[macro_use]
 extern crate failure;
 #[macro_use]
@@ -11,4 +11,4 @@ mod quilt;
 pub use quilt::{PatchRequest, PatchSelection, Quilt, QuiltMeta};
 
 mod catalog;
-pub use catalog::Catalog;
+pub use catalog::{MemoryCatalog, SQLiteCatalog, Catalog};

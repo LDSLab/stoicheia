@@ -39,11 +39,11 @@ impl TryFrom<&rusqlite::Row<'_>> for QuiltMeta {
 /// and es the persistence layer to fetch and store them
 pub struct Quilt<'t> {
     name: String,
-    catalog: &'t Catalog,
+    catalog: &'t dyn Catalog,
 }
 impl<'t> Quilt<'t> {
     /// Initialize a new quilt
-    pub fn new(name: String, catalog: &'t Catalog) -> Self {
+    pub fn new(name: String, catalog: &'t dyn Catalog) -> Self {
         Self { name, catalog }
     }
 
