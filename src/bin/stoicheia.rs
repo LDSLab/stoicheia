@@ -53,11 +53,19 @@ fn put_patch(
     Ok(catalog.get_quilt(&quilt_name)?.apply(pat.into_inner())?)
 }
 
-
 /// Create the rocket server separate from launching it, so we can test it
 fn make_rocket(cat: Arc<dyn Catalog>) -> rocket::Rocket {
     rocket::ignite()
-        .mount("/", routes![list_catalog, get_quilt_meta, put_quilt, get_patch, put_patch])
+        .mount(
+            "/",
+            routes![
+                list_catalog,
+                get_quilt_meta,
+                put_quilt,
+                get_patch,
+                put_patch
+            ],
+        )
         .manage(cat)
 }
 
@@ -69,22 +77,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::make_rocket;
-    use rocket::local::Client;
-    use rocket::http::Status;
     use rocket::http::ContentType;
+    use rocket::http::Status;
+    use rocket::local::Client;
     use stoicheia::*;
 
     fn quilt_fixture() -> Client {
         let catalog = MemoryCatalog::new();
         let client = Client::new(make_rocket(catalog)).expect("valid rocket instance");
 
-        let response = client.post("/catalog")
+        let response = client
+            .post("/catalog")
             .header(ContentType::JSON)
-            .body(r#"
+            .body(
+                r#"
                 {
                     "name": "sales",
                     "axes": ["item", "store", "day"]
-                }"#
+                }"#,
             )
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
@@ -99,7 +109,10 @@ mod tests {
 
         let mut response = client.get("/quilt/sales").dispatch();
         assert_eq!(response.status(), Status::Ok);
-        assert_eq!(response.body_string(), Some(r#"{"name":"sales","axes":["item","store","day"]}"#.into()));
+        assert_eq!(
+            response.body_string(),
+            Some(r#"{"name":"sales","axes":["item","store","day"]}"#.into())
+        );
     }
 
     #[test]
@@ -136,22 +149,26 @@ mod tests {
             }   
         }"#;
 
-        let response = client.patch("/quilt/sales")
+        let response = client
+            .patch("/quilt/sales")
             .header(ContentType::JSON)
             .body(patch_text)
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
 
-        let mut response = client.post("/quilt/sales")
+        let mut response = client
+            .post("/quilt/sales")
             .header(ContentType::JSON)
-            .body(r#"{
+            .body(
+                r#"{
                 "axes": [
                     ["item", {"All": null}],
                     ["store", {"All": null}],
                     ["day", {"All": null}]
                 ]
-            }"#)
-        .dispatch();
+            }"#,
+            )
+            .dispatch();
         assert_eq!(response.status(), Status::Ok);
         assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4,10]},{"name":"store","labels":[-12,0,3]},{"name":"day","labels":[10,11,12,14]}],"dense":{"v":1,"dim":[2,3,4],"data":[0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12,0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12]}}"#.into()));
     }

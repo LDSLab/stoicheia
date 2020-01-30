@@ -1,16 +1,18 @@
 use failure::Fallible;
 use std::convert::TryFrom;
 
-use crate::{Catalog, Patch};
+use crate::{Axis, Catalog, Label, Patch};
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct PatchRequest {
-    axes: Vec<(String, PatchSelection)>,
+    axes: Vec<(String, AxisSelection)>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
-pub enum PatchSelection {
+pub enum AxisSelection {
     All,
+    Range { start: Label, end: Label },
+    Labels(Vec<Label>),
 }
 
 /// Metadata about a quilt
@@ -51,15 +53,45 @@ impl<'t> Quilt<'t> {
     ///
     /// The tensor name is part of the patch so it doesn't need to be specified
     pub fn apply(&mut self, pat: Patch<f32>) -> Fallible<()> {
-        self.catalog.put_patch(&self.name, "main", pat)?;
+        self.catalog.put_patch(0, pat)?;
         Ok(())
+    }
+
+    /// Resolve the labels that a patch request selects
+    fn get_axis_from_selection(&self, axis_name: &str, req: AxisSelection) -> Fallible<Axis> {
+        let axis: Axis = self.catalog.get_axis(axis_name)?;
+        Ok(match req {
+            AxisSelection::All => axis,
+            AxisSelection::Labels(labels) => Axis::new(axis_name.into(), labels),
+            AxisSelection::Range { start, end } => {
+                // Axis labels are not guaranteed to be sorted because it may be optimized for storage, not lookup
+                let start_ix = axis
+                    .labels
+                    .iter()
+                    .position(|&x| x == start)
+                    .unwrap_or(axis.labels.len());
+                let end_ix = start_ix
+                    + axis.labels[start_ix..]
+                        .iter()
+                        .position(|&x| x == end)
+                        .unwrap_or(axis.labels.len() - start_ix);
+                Axis {
+                    name: axis.name,
+                    labels: Vec::from(&axis.labels[start_ix..end_ix]),
+                }
+            }
+        })
     }
 
     /// Assemble a patch from a quilt
     ///
     /// The tensor name is part of the patch so it doesn't need to be specified
     pub fn assemble(&mut self, req: PatchRequest) -> Fallible<Patch<f32>> {
-        let pat = self.catalog.get_patch(&self.name, "main")?;
+        for patch_id in self.catalog.get_patches_by_bounding_box(
+            &self.name,
+            &[], // no box - means everywhere
+        ) {}
+        let pat = self.catalog.get_patch(0)?;
         ensure!(pat.is_some(), "Failed to retrieve patch!");
         Ok(pat.unwrap())
     }

@@ -4,11 +4,15 @@ extern crate failure;
 #[macro_use]
 extern crate serde_derive;
 
+/// The user-readable label for an axis (maybe not consecutive)
+pub type Label = i64;
+pub type PatchID = i64;
+
 mod patch;
-pub use patch::Patch;
+pub use patch::{Axis, Patch};
 
 mod quilt;
-pub use quilt::{PatchRequest, PatchSelection, Quilt, QuiltMeta};
+pub use quilt::{AxisSelection, PatchRequest, Quilt, QuiltMeta};
 
 mod catalog;
-pub use catalog::{MemoryCatalog, SQLiteCatalog, Catalog};
+pub use catalog::{Catalog, MemoryCatalog, SQLiteCatalog};

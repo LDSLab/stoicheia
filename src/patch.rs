@@ -1,9 +1,8 @@
+use crate::Label;
 use failure::Fallible;
 use itertools::Itertools;
-use ndarray::{ArrayD, Axis};
-
-/// The user-readable label for an axis (maybe not consecutive)
-type Label = i64;
+use ndarray as nd;
+use ndarray::ArrayD;
 
 /// A tensor with labeled axes
 ///
@@ -20,15 +19,21 @@ type Label = i64;
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Patch<Elem: Copy> {
     /// Names and labels of the axes
-    axes: Vec<PatchAxis>,
+    axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
     dense: ArrayD<Elem>,
 }
 
+/// A dimension that can be used as labels for patches
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct PatchAxis {
-    name: String,
-    labels: Vec<Label>,
+pub struct Axis {
+    pub name: String,
+    pub labels: Vec<Label>,
+}
+impl Axis {
+    pub fn new(name: String, labels: Vec<Label>) -> Axis {
+        Axis { name, labels }
+    }
 }
 
 impl<Elem: Copy> Patch<Elem> {
@@ -36,7 +41,7 @@ impl<Elem: Copy> Patch<Elem> {
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
-    pub fn new(mut axes: Vec<PatchAxis>, mut dense: ArrayD<Elem>) -> Fallible<Self> {
+    pub fn new(mut axes: Vec<Axis>, mut dense: ArrayD<Elem>) -> Fallible<Self> {
         ensure!(
             axes.len() == dense.axes().count(),
             "The number of labeled axes doesn't match the number of axes in the dense tensor."
@@ -56,7 +61,7 @@ impl<Elem: Copy> Patch<Elem> {
                     .sorted_by_key(|&i| axis.labels[i])
                     .collect_vec();
                 // Shuffle them into place
-                dense = dense.select(Axis(ax_ix), &shuffle);
+                dense = dense.select(nd::Axis(ax_ix), &shuffle);
                 axis.labels = shuffle.into_iter().map(|i| axis.labels[i]).collect();
             }
 
