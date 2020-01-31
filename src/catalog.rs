@@ -1,13 +1,13 @@
 use failure::Fallible;
 use itertools::Itertools;
-use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
+use rusqlite::{ToSql, NO_PARAMS};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thread_local::CachedThreadLocal;
 
-use crate::{Axis, Label, Patch, PatchID, Quilt, QuiltMeta};
+use crate::{Axis, BoundingBox, Patch, PatchID, Quilt, QuiltMeta};
 
 pub trait Catalog: Send + Sync {
     /// Get a quilt by name
@@ -32,11 +32,11 @@ pub trait Catalog: Send + Sync {
     fn get_patches_by_bounding_box(
         &self,
         quilt_name: &str,
-        bound: &[std::ops::Range<Label>],
+        bound: &BoundingBox,
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>>;
 
     /// Get a single patch by ID
-    fn get_patch(&self, id: PatchID) -> Fallible<Option<Patch<f32>>>;
+    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>>;
 
     /// Save a single patch by ID
     fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()>;
@@ -98,7 +98,7 @@ impl Catalog for MemoryCatalog {
     fn get_patches_by_bounding_box(
         &self,
         _quilt_name: &str,
-        _bound: &[std::ops::Range<Label>],
+        _bound: &BoundingBox,
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>> {
         // This stub is hilariously memory inefficient but it's intended mostly for testing
         Ok(Box::new(
@@ -113,13 +113,14 @@ impl Catalog for MemoryCatalog {
         ))
     }
 
-    fn get_patch(&self, id: PatchID) -> Fallible<Option<Patch<f32>>> {
-        Ok(self
+    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
+        self
             .patches
             .lock()
             .expect("Memory catalog is corrupted")
             .get(&id)
-            .cloned())
+            .ok_or(format_err!("No such patch {:?}", id))
+            .cloned()
     }
     fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()> {
         self.patches
@@ -260,16 +261,16 @@ impl Catalog for SQLiteCatalog {
     fn get_patches_by_bounding_box(
         &self,
         quilt_name: &str,
-        bound: &[std::ops::Range<Label>],
+        bound: &BoundingBox,
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>> {
         // TODO: Verify that the dimensions match what we see in the quilt
         // The SQL formatting happens here because patch_tree
         let bound = (0..3)
-            .map(|i| bound.get(i).cloned().unwrap_or(-1000000000..1000000000))
+            .map(|i| bound.0.get(i).cloned().unwrap_or(0..=1 << 30))
             .collect_vec();
 
         // Fetch patch ID's first, and then get them one by one. This is so we don't concurrently have multiple connections open.
-        let mut patch_ids: Vec<i64> = vec![];
+        let mut patch_ids: Vec<PatchID> = vec![];
         for patch_id in self
             .get_conn()?
             .prepare(
@@ -287,12 +288,12 @@ impl Catalog for SQLiteCatalog {
             )?
             .query_map(
                 &[
-                    &bound[0].end as &dyn ToSql,
-                    &bound[0].start,
-                    &bound[1].end,
-                    &bound[1].start,
-                    &bound[2].end,
-                    &bound[2].start,
+                    &(*bound[0].end() as i64) as &dyn ToSql,
+                    &(*bound[0].start() as i64),
+                    &(*bound[1].end() as i64),
+                    &(*bound[1].start() as i64),
+                    &(*bound[2].end() as i64),
+                    &(*bound[2].start() as i64),
                     &quilt_name,
                 ],
                 |r| r.get(0),
@@ -304,19 +305,15 @@ impl Catalog for SQLiteCatalog {
         Ok(Box::new(patch_ids.into_iter()))
     }
 
-    fn get_patch(&self, id: PatchID) -> Fallible<Option<Patch<f32>>> {
-        let res: Option<Vec<u8>> = self
+    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
+        let res: Vec<u8> = self
             .get_conn()?
             .query_row(
                 "SELECT content FROM patch WHERE patch_id = ?",
                 &[&id],
                 |r| r.get(0),
-            )
-            .optional()?;
-        Ok(match res {
-            None => None,
-            Some(x) => bincode::deserialize(&x[..])?,
-        })
+            )?;
+        Ok(bincode::deserialize(&res[..])?)
     }
 
     fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()> {

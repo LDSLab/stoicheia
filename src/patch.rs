@@ -1,4 +1,4 @@
-use crate::Label;
+use crate::{Axis};
 use failure::Fallible;
 use itertools::Itertools;
 use ndarray as nd;
@@ -17,26 +17,14 @@ use ndarray::ArrayD;
 ///         - They might overlap other patches (it depends on the Quilt)
 ///     - A regular array of some datatype in the same order as the list of axes
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct Patch<Elem: Copy> {
+pub struct Patch<Elem: Copy + Default> {
     /// Names and labels of the axes
     axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
     dense: ArrayD<Elem>,
 }
 
-/// A dimension that can be used as labels for patches
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct Axis {
-    pub name: String,
-    pub labels: Vec<Label>,
-}
-impl Axis {
-    pub fn new(name: String, labels: Vec<Label>) -> Axis {
-        Axis { name, labels }
-    }
-}
-
-impl<Elem: Copy> Patch<Elem> {
+impl<Elem: Copy + Default> Patch<Elem> {
     /// Create a new patch from an array and some labels
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
@@ -73,6 +61,12 @@ impl<Elem: Copy> Patch<Elem> {
         }
 
         Ok(Self { axes, dense })
+    }
+
+    /// Create a new empty patch given some axes
+    pub fn from_axes(axes: Vec<Axis>) -> Fallible<Self> {
+        let elements = ArrayD::default(axes.iter().map(|a|a.labels.len()).collect_vec());
+        Self::new(axes, elements)
     }
 
     /// Apply another patch to this one, changing `self` where it overlaps with `pat`.
