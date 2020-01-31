@@ -23,15 +23,16 @@ fn get_quilt_meta(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Js
 }
 
 #[post("/catalog", format = "json", data = "<meta>")]
-fn put_quilt(catalog: State<Arc<dyn Catalog>>, meta: Json<QuiltMeta>) -> Fallible<()> {
-    Ok(catalog.put_quilt(meta.into_inner())?)
+fn create_new_quilt(catalog: State<Arc<dyn Catalog>>, meta: Json<QuiltMeta>) -> Fallible<()> {
+    Ok(catalog.create_new_quilt(meta.into_inner())?)
 }
 
 //
 // Quilt patching
 //
 
-#[post("/quilt/<quilt_name>", format = "json", data = "<patch_request>")]
+/// Get a slice out of a quilt
+#[post("/quilt/slice/<quilt_name>", format = "json", data = "<patch_request>")]
 fn get_patch(
     catalog: State<Arc<dyn Catalog>>,
     quilt_name: String,
@@ -44,13 +45,35 @@ fn get_patch(
     ))
 }
 
-#[patch("/quilt/<quilt_name>", format = "json", data = "<pat>")]
-fn put_patch(
+/// Apply a patch to a quilt
+#[patch("/quilt/slice/<quilt_name>", format = "json", data = "<pat>")]
+fn apply_patch(
     catalog: State<Arc<dyn Catalog>>,
     quilt_name: String,
     pat: Json<Patch<f32>>,
 ) -> Fallible<()> {
     Ok(catalog.get_quilt(&quilt_name)?.apply(pat.into_inner())?)
+}
+
+/// Get a copy of a whole axis.
+#[get("/axis/<name>")]
+fn get_axis(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Json<Axis>> {
+    Ok(Json(catalog.get_axis(&name)?))
+}
+
+/// Append some values to the end of an axis
+///
+/// This is a relatively cheap operation and doesn't require patches to be rebuilt.
+#[patch("/axis/<name>", format = "json", data = "<labels>")]
+fn append_axis(
+    catalog: State<Arc<dyn Catalog>>,
+    name: String,
+    labels: Json<Vec<Label>>,
+) -> Fallible<()> {
+    Ok(catalog.union_axis(&Axis {
+        name,
+        labels: labels.into_inner(),
+    })?)
 }
 
 /// Create the rocket server separate from launching it, so we can test it
@@ -61,9 +84,11 @@ fn make_rocket(cat: Arc<dyn Catalog>) -> rocket::Rocket {
             routes![
                 list_catalog,
                 get_quilt_meta,
-                put_quilt,
+                create_new_quilt,
                 get_patch,
-                put_patch
+                apply_patch,
+                get_axis,
+                append_axis
             ],
         )
         .manage(cat)
@@ -81,95 +106,199 @@ mod tests {
     use rocket::http::Status;
     use rocket::local::Client;
     use stoicheia::*;
-
-    fn quilt_fixture() -> Client {
+    
+    #[test]
+    fn quilt_axis_patch_test() {
+        //
+        // Create and retrieve quilts, axes, and patches
+        //
         let catalog = MemoryCatalog::new();
         let client = Client::new(make_rocket(catalog)).expect("valid rocket instance");
 
-        let response = client
-            .post("/catalog")
-            .header(ContentType::JSON)
-            .body(
-                r#"
-                {
-                    "name": "sales",
-                    "axes": ["item", "store", "day"]
-                }"#,
-            )
-            .dispatch();
-        assert_eq!(response.status(), Status::Ok);
-        std::mem::drop(response);
-
-        client
-    }
-
-    #[test]
-    fn create_new_quilt() {
-        let client = quilt_fixture();
-
-        let mut response = client.get("/quilt/sales").dispatch();
-        assert_eq!(response.status(), Status::Ok);
-        assert_eq!(
-            response.body_string(),
-            Some(r#"{"name":"sales","axes":["item","store","day"]}"#.into())
-        );
-    }
-
-    #[test]
-    fn get_and_set_patch() {
-        let client = quilt_fixture();
-        let patch_text = r#"
         {
-            "axes": [
-                {
-                    "name": "item",
-                    "labels": [-4, 10]
-                },
-                {
-                    "name": "store",
-                    "labels": [-12, 0, 3]
-                },
-                {
-                    "name": "day",
-                    "labels": [10, 11, 12, 14]
-                }
-            ],
-            "dense": {
-                "v": 1,
-                "dim": [2, 3, 4],
-                "data": [
-                    0.01, 0.02, 0.03, 0.04,
-                    0.05, 0.06, 0.07, 0.08,
-                    0.09, 0.10, 0.11, 0.12,
+            //
+            // Create a quilt
+            //
+            let response = client
+                .post("/catalog")
+                .header(ContentType::JSON)
+                .body(
+                    r#"
+                    {
+                        "name": "sales",
+                        "axes": ["item", "store", "day"]
+                    }"#,
+                )
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+        }
 
-                    0.01, 0.02, 0.03, 0.04,
-                    0.05, 0.06, 0.07, 0.08,
-                    0.09, 0.10, 0.11, 0.12
-                ]
-            }   
-        }"#;
+        {
+            //
+            // Retrieve a quilt
+            //
+            let mut response = client.get("/quilt/sales").dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            assert_eq!(
+                response.body_string(),
+                Some(r#"{"name":"sales","axes":["item","store","day"]}"#.into())
+            );
+        }
 
-        let response = client
-            .patch("/quilt/sales")
-            .header(ContentType::JSON)
-            .body(patch_text)
-            .dispatch();
-        assert_eq!(response.status(), Status::Ok);
+        {
+            //
+            // Create axes
+            //
+            let response = client
+                .patch("/axis/item")
+                .header(ContentType::JSON)
+                .body("[-4, 10]")
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            let response = client
+                .patch("/axis/store")
+                .header(ContentType::JSON)
+                .body("[0, -12, 3]")
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            let response = client
+                .patch("/axis/day")
+                .header(ContentType::JSON)
+                .body("[10, 11, 12, 14]")
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+        }
+        
+        {
+            //
+            // Retrieve an axis
+            //
+            let mut response = client
+                .get("/axis/store")
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            assert_eq!(
+                response.body_string(),
+                Some(r#"{"name":"store","labels":[0,-12,3]}"#.into())
+            );
+        }
 
-        let mut response = client
-            .post("/quilt/sales")
-            .header(ContentType::JSON)
-            .body(
-                r#"{
+        {
+            //
+            // Create a patch
+            //
+
+            // Store axis is not increasing but it does match the axis
+            let patch_text = r#"
+            {
                 "axes": [
-                    ["item", {"All": null}],
-                    ["store", {"All": null}],
-                    ["day", {"All": null}]
-                ]
-            }"#,
-            )
-            .dispatch();
-        assert_eq!(response.status(), Status::Ok);
-        assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4,10]},{"name":"store","labels":[-12,0,3]},{"name":"day","labels":[10,11,12,14]}],"dense":{"v":1,"dim":[2,3,4],"data":[0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12,0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12]}}"#.into()));
+                    {
+                        "name": "item",
+                        "labels": [-4, 10]
+                    },
+                    {
+                        "name": "store",
+                        "labels": [0, -12, 3]
+                    },
+                    {
+                        "name": "day",
+                        "labels": [10, 11, 12, 14]
+                    }
+                ],
+                "dense": {
+                    "v": 1,
+                    "dim": [2, 3, 4],
+                    "data": [
+                        0.01, 0.02, 0.03, 0.04,
+                        0.05, 0.06, 0.07, 0.08,
+                        0.09, 0.10, 0.11, 0.12,
+
+                        0.01, 0.02, 0.03, 0.04,
+                        0.05, 0.06, 0.07, 0.08,
+                        0.09, 0.10, 0.11, 0.12
+                    ]
+                }   
+            }"#;
+
+            let response = client
+                .patch("/quilt/slice/sales")
+                .header(ContentType::JSON)
+                .body(patch_text)
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+
+        }
+
+        {
+            //
+            // Get one element from the patch
+            //
+            let mut response = client
+                .post("/quilt/slice/sales")
+                .header(ContentType::JSON)
+                .body(
+                    r#"[
+                        {"type": "Labels", "name": "item", "labels": [-4]},
+                        {"type": "Labels", "name": "store", "labels": [3]},
+                        {"type": "Labels", "name": "day",  "labels": [12]}
+                    ]"#,
+                )
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4]},{"name":"store","labels":[3]},{"name":"day","labels":[12]}],"dense":{"v":1,"dim":[1,1,1],"data":[0.11]}}"#.into()));
+            
+
+            let mut response = client
+                .post("/quilt/slice/sales")
+                .header(ContentType::JSON)
+                .body(
+                    r#"[
+                        {"type": "RangeInclusive", "name": "item", "start": -4, "end": -4},
+                        {"type": "RangeInclusive", "name": "store", "start": 3, "end": 3},
+                        {"type": "RangeInclusive", "name": "day", "start": 12, "end": 12}
+                    ]"#,
+                )
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4]},{"name":"store","labels":[3]},{"name":"day","labels":[12]}],"dense":{"v":1,"dim":[1,1,1],"data":[0.11]}}"#.into()));
+        }
+
+        {
+            //
+            // Retrieve the whole patch with transposition
+            //
+            let mut response = client
+                .post("/quilt/slice/sales")
+                .header(ContentType::JSON)
+                .body(
+                    r#"[
+                        {"type": "All", "name": "item"},
+                        {"type": "Labels", "name": "store", "labels": [-12, 0, 3]},
+                        {"type": "All", "name": "day"}
+                    ]"#,
+                )
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4,10]},{"name":"store","labels":[-12,0,3]},{"name":"day","labels":[10,11,12,14]}],"dense":{"v":1,"dim":[2,3,4],"data":[0.05,0.06,0.07,0.08,0.01,0.02,0.03,0.04,0.09,0.1,0.11,0.12,0.05,0.06,0.07,0.08,0.01,0.02,0.03,0.04,0.09,0.1,0.11,0.12]}}"#.into()));
+        }
+
+        {
+            //
+            // Retrieve the whole patch
+            //
+            let mut response = client
+                .post("/quilt/slice/sales")
+                .header(ContentType::JSON)
+                .body(
+                    r#"[
+                        {"type": "All", "name": "item"},
+                        {"type": "All", "name": "store"},
+                        {"type": "All", "name": "day"}
+                    ]"#,
+                )
+                .dispatch();
+            assert_eq!(response.status(), Status::Ok);
+            assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4,10]},{"name":"store","labels":[0,-12,3]},{"name":"day","labels":[10,11,12,14]}],"dense":{"v":1,"dim":[2,3,4],"data":[0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12,0.01,0.02,0.03,0.04,0.05,0.06,0.07,0.08,0.09,0.1,0.11,0.12]}}"#.into()));
+        }
     }
 }

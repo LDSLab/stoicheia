@@ -1,6 +1,6 @@
 use failure::Fallible;
 use itertools::Itertools;
-use rusqlite::{ToSql, NO_PARAMS};
+use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ pub trait Catalog: Send + Sync {
     fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta>;
 
     /// Create a new quilt
-    fn put_quilt(&self, meta: QuiltMeta) -> Fallible<()>;
+    fn create_new_quilt(&self, meta: QuiltMeta) -> Fallible<()>;
 
     /// List all the quilts in the catalog
     fn list_quilts(&self) -> Fallible<HashMap<String, QuiltMeta>>;
@@ -45,7 +45,7 @@ pub trait Catalog: Send + Sync {
     fn get_axis(&self, name: &str) -> Fallible<Axis>;
 
     /// Replace the labels of an axis, in the order you would expect them to be stored
-    fn put_axis(&self, name: &str, axis: Axis) -> Fallible<()>;
+    fn union_axis(&self, axis: &Axis) -> Fallible<()>;
 }
 
 /// An in-memory catalog, meant for testing and dummy databases
@@ -78,7 +78,7 @@ impl Catalog for MemoryCatalog {
             .ok_or(format_err!("No such quilt {}", quilt_name))
             .cloned()
     }
-    fn put_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
+    fn create_new_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
         self.quilts
             .lock()
             .expect("Memory catalog is corrupted.")
@@ -114,8 +114,7 @@ impl Catalog for MemoryCatalog {
     }
 
     fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
-        self
-            .patches
+        self.patches
             .lock()
             .expect("Memory catalog is corrupted")
             .get(&id)
@@ -135,14 +134,19 @@ impl Catalog for MemoryCatalog {
             .lock()
             .expect("Memory catalog is corrupted.")
             .get(axis_name)
-            .ok_or(format_err!("No such quilt {}", axis_name))
+            .ok_or(format_err!("No such axis {}", axis_name))
             .cloned()
     }
-    fn put_axis(&self, name: &str, axis: Axis) -> Fallible<()> {
-        self.axes
-            .lock()
-            .expect("Memory catalog is corrupted.")
-            .insert(name.into(), axis);
+
+    fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
+        // Find the existing axis
+        let mut axes = self.axes.lock().expect("Memory catalog is corrupted.");
+        let existing_axis = axes.entry(new_axis.name.clone()).or_insert_with(|| Axis {
+            name: new_axis.name.clone(),
+            labels: vec![],
+        });
+
+        existing_axis.union(new_axis);
         Ok(())
     }
 }
@@ -250,7 +254,7 @@ impl Catalog for SQLiteCatalog {
         Ok(map)
     }
 
-    fn put_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
+    fn create_new_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
         self.get_conn()?.execute(
             "INSERT INTO quilt(quilt_name, axes) VALUES (?, ?);",
             &[&meta.name, &serde_json::to_string(&meta.axes)?],
@@ -306,13 +310,11 @@ impl Catalog for SQLiteCatalog {
     }
 
     fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
-        let res: Vec<u8> = self
-            .get_conn()?
-            .query_row(
-                "SELECT content FROM patch WHERE patch_id = ?",
-                &[&id],
-                |r| r.get(0),
-            )?;
+        let res: Vec<u8> = self.get_conn()?.query_row(
+            "SELECT content FROM patch WHERE patch_id = ?",
+            &[&id],
+            |r| r.get(0),
+        )?;
         Ok(bincode::deserialize(&res[..])?)
     }
 
@@ -335,11 +337,38 @@ impl Catalog for SQLiteCatalog {
     }
 
     /// Replace the labels of an axis, in the order you would expect them to be stored
-    fn put_axis(&self, name: &str, axis: Axis) -> Fallible<()> {
-        self.get_conn()?.execute(
+    fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
+        let conn = self.get_conn()?;
+        // TODO: determine if a race condition here is possible in an async environment
+        conn.execute("BEGIN;", NO_PARAMS)?;
+
+        let res: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT content FROM axis_content WHERE axis_name = ?",
+                &[&new_axis.name],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        let mut existing_axis = match res {
+            Some(x) => bincode::deserialize(&x[..])?,
+            None => Axis {
+                name: new_axis.name.clone(),
+                labels: vec![],
+            },
+        };
+        existing_axis.union(new_axis);
+
+        conn.execute(
             "INSERT OR REPLACE INTO axis_content(axis_name, content) VALUES (?,?);",
-            &[&name as &dyn ToSql, &bincode::serialize(&axis)?],
+            &[
+                &new_axis.name as &dyn ToSql,
+                &bincode::serialize(&existing_axis)?,
+            ],
         )?;
+
+        conn.execute("COMMIT;", NO_PARAMS)?;
+
         Ok(())
     }
 }

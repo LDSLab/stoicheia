@@ -1,12 +1,14 @@
 #![feature(is_sorted, result_cloned)]
+//! Sharded tensor storage and retrieval
 #[macro_use]
 extern crate failure;
 #[macro_use]
 extern crate serde_derive;
 extern crate rusqlite as sql;
+extern crate ndarray as nd;
 
 mod patch;
-pub use patch::{Patch};
+pub use patch::Patch;
 
 mod quilt;
 pub use quilt::{Quilt, QuiltMeta};
@@ -14,15 +16,21 @@ pub use quilt::{Quilt, QuiltMeta};
 mod catalog;
 pub use catalog::{Catalog, MemoryCatalog, SQLiteCatalog};
 
+mod axis;
+pub use axis::Axis;
 
-/// The user-readable label for an axis. It may be huge, negative, and on-consecutive
+/// A user-defined signed integer label for a particular component of an axis
+/// 
+/// Labels of an axis may not be consecutive, and they define both the storage and retrieval order.
+/// This is important because we trust the user knows what items will be used together, and without
+/// this, patches may cluster meaningless groups of points.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
-pub struct Label(i64);
+pub struct Label(pub i64);
 impl rusqlite::ToSql for Label {
     fn to_sql(&self) -> Result<sql::types::ToSqlOutput<'_>, sql::Error> {
-        Ok(sql::types::ToSqlOutput::Owned(
-            sql::types::Value::Integer(self.0)
-        ))
+        Ok(sql::types::ToSqlOutput::Owned(sql::types::Value::Integer(
+            self.0,
+        )))
     }
 }
 impl rusqlite::types::FromSql for Label {
@@ -31,14 +39,14 @@ impl rusqlite::types::FromSql for Label {
     }
 }
 
-/// The database ID of a patch. Essentially meaningless, and may be random.
+/// The database ID of a patch.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
 pub struct PatchID(i64);
 impl rusqlite::ToSql for PatchID {
     fn to_sql(&self) -> Result<sql::types::ToSqlOutput<'_>, sql::Error> {
-        Ok(sql::types::ToSqlOutput::Owned(
-            sql::types::Value::Integer(self.0)
-        ))
+        Ok(sql::types::ToSqlOutput::Owned(sql::types::Value::Integer(
+            self.0,
+        )))
     }
 }
 impl rusqlite::types::FromSql for PatchID {
@@ -47,37 +55,30 @@ impl rusqlite::types::FromSql for PatchID {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-pub struct PatchRequest {
-    axes: Vec<AxisSelection>,
-}
+pub type PatchRequest = Vec<AxisSelection>;
 
 /// Selection by axis labels, similar to .loc[] in Pandas
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "type")]
 pub enum AxisSelection {
-    All { name: String },
-    RangeInclusive { name: String, start: Label, end: Label },
-    Labels{ name: String, labels: Vec<Label> },
+    All {
+        name: String,
+    },
+    RangeInclusive {
+        name: String,
+        start: Label,
+        end: Label,
+    },
+    Labels {
+        name: String,
+        labels: Vec<Label>,
+    },
 }
 
 /// Selection by axis indicess, similar to .iloc[] in Pandas
 type AxisSegment = std::ops::RangeInclusive<usize>;
 
-/// Selection by bounding box, which is always by index
+/// An N-dimensional box referencing a contiguous region of multiple axes.
+/// 
+/// Remember that in these boxes, storage indices (usize) are always consecutive, but labels (i64) may not be.
 pub struct BoundingBox(Vec<AxisSegment>);
-
-
-/// A dimension that can be used as labels for patches
-#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
-pub struct Axis {
-    pub name: String,
-    pub labels: Vec<Label>,
-}
-impl Axis {
-    pub fn new(name: String, labels: Vec<Label>) -> Axis {
-        Axis { name, labels }
-    }
-    pub fn len(&self) -> usize {
-        self.labels.len()
-    }
-}

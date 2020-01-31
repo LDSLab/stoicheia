@@ -1,21 +1,21 @@
-use crate::{Axis};
+use crate::{Label, Axis};
 use failure::Fallible;
 use itertools::Itertools;
-use ndarray as nd;
 use ndarray::ArrayD;
+use std::collections::{HashMap, HashSet};
 
 /// A tensor with labeled axes
 ///
 /// A patch has several interesting properties:
 ///
-///     - A name, which is the tensor they are part of
-///     - A set of axes, and labels of each of the components along that axis
-///         - The axes must match the length and order of the dense array
-///         - They are stored sorted internally
-///         - They must be unique
-///         - They might not be consecutive (it depends on the Quilt)
-///         - They might overlap other patches (it depends on the Quilt)
-///     - A regular array of some datatype in the same order as the list of axes
+///   - A name, which is the tensor they are part of
+///   - A set of axes, and labels of each of the components along that axis
+///       - The axes must match the length and order of the dense array
+///       - They are stored sorted internally
+///       - They must be unique
+///       - They might not be consecutive (it depends on the Quilt)
+///       - They might overlap other patches (it depends on the Quilt)
+///   - A regular array of some datatype in the same order as the list of axes
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Patch<Elem: Copy + Default> {
     /// Names and labels of the axes
@@ -29,7 +29,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
-    pub fn new(mut axes: Vec<Axis>, mut dense: ArrayD<Elem>) -> Fallible<Self> {
+    pub fn new(mut axes: Vec<Axis>, dense: ArrayD<Elem>) -> Fallible<Self> {
         ensure!(
             axes.len() == dense.axes().count(),
             "The number of labeled axes doesn't match the number of axes in the dense tensor."
@@ -41,21 +41,11 @@ impl<Elem: Copy + Default> Patch<Elem> {
             "The shape of the axis labels doesn't match the shape of the dense tensor."
         );
 
-        // Check that all the axis labels are in order
+        // Check that all the axis labels are unique
         for (ax_ix, axis) in axes.iter_mut().enumerate() {
-            if !axis.labels.is_sorted() {
-                // Argsort the axis
-                let shuffle = (0..axis.labels.len())
-                    .sorted_by_key(|&i| axis.labels[i])
-                    .collect_vec();
-                // Shuffle them into place
-                dense = dense.select(nd::Axis(ax_ix), &shuffle);
-                axis.labels = shuffle.into_iter().map(|i| axis.labels[i]).collect();
-            }
-
             // Check that everything is distinct
             ensure!(
-                axis.labels.iter().dedup().count() == axis.labels.len(),
+                axis.labels.iter().collect::<HashSet<_>>().len() == axis.labels.len(),
                 "The patch axis labels are not unique; they can't be duplicated."
             );
         }
@@ -65,7 +55,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
 
     /// Create a new empty patch given some axes
     pub fn from_axes(axes: Vec<Axis>) -> Fallible<Self> {
-        let elements = ArrayD::default(axes.iter().map(|a|a.labels.len()).collect_vec());
+        let elements = ArrayD::default(axes.iter().map(|a| a.labels.len()).collect_vec());
         Self::new(axes, elements)
     }
 
@@ -121,21 +111,20 @@ impl<Elem: Copy + Default> Patch<Elem> {
         //              or else None
         let mut label_shuffles = vec![];
         for ax_ix in 0..shard.ndim() {
-            let mut label_shuffle = vec![];
-            let mut pat_idx = 0;
-            let ref pat_labels = shard_axes[ax_ix].labels;
-
-            for &self_label in self.axes[ax_ix].labels.iter() {
-                while pat_labels[pat_idx] < self_label && pat_idx < pat_labels.len() {
-                    pat_idx += 1;
-                }
-                label_shuffle.push(if pat_labels[pat_idx] == self_label {
-                    Some(pat_idx)
-                } else {
-                    None
-                });
-            }
-            label_shuffles.push(label_shuffle);
+            let pat_label_to_idx: HashMap<Label, usize> = shard_axes[ax_ix]
+                .labels
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, l)| (l, i))
+                .collect();
+            label_shuffles.push(
+                self.axes[ax_ix]
+                .labels
+                .iter()
+                .map(|l| pat_label_to_idx.get(l).copied())
+                .collect::<Vec<Option<usize>>>()
+            );
         }
 
         //
@@ -162,4 +151,112 @@ impl<Elem: Copy + Default> Patch<Elem> {
         }
         Ok(())
     }
+
+    /// Render the patch as a dense array. This always copies the data.
+    pub fn to_dense(&self) -> nd::ArrayD<Elem> {
+        self.dense.clone()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::*;
+    use ndarray as nd;
+
+    #[test]
+    fn patch_1d_apply() {
+        let item_axis = Axis::new("item", vec![ Label(1), Label(3) ]);
+    
+        // Set both elements
+        let mut base = Patch::from_axes(vec![
+            item_axis.clone()
+        ]).unwrap();
+        let revision = Patch::new(vec![
+            item_axis.clone()
+        ], nd::arr1(&[100., 300.]).into_dyn()
+        ).unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert_eq!(modified[[0]], 100.);
+        assert_eq!(modified[[1]], 300.);
+    
+        // Set one but miss the other
+        let mut base = Patch::from_axes(vec![
+            item_axis.clone()
+        ]).unwrap();
+        let revision = Patch::new(vec![
+            Axis::new("item", vec![ Label(1), Label(2) ])
+        ], nd::arr1(&[100., 300.]).into_dyn()
+        ).unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert_eq!(modified[[0]], 100.);
+        assert_eq!(modified[[1]], 0.);
+    
+    
+        // Miss both
+        let mut base = Patch::from_axes(vec![
+            item_axis.clone()
+        ]).unwrap();
+        let revision = Patch::new(vec![
+            Axis::new("item", vec![ Label(10), Label(30) ])
+        ], nd::arr1(&[100., 300.]).into_dyn()
+        ).unwrap();
+        base.apply(&revision).unwrap();
+    
+        let modified = base.to_dense();
+        assert_eq!(modified[[0]], 0.);
+        assert_eq!(modified[[1]], 0.);
+
+        // Unsorted labels
+        let mut base = Patch::from_axes(vec![
+            Axis::new("item", vec![ Label(30), Label(10) ])
+        ]).unwrap();
+        let revision = Patch::new(vec![
+            Axis::new("item", vec![ Label(30), Label(10) ])
+        ], nd::arr1(&[100., 300.]).into_dyn()
+        ).unwrap();
+        base.apply(&revision).unwrap();
+    
+        let modified = base.to_dense();
+        assert_eq!(modified[[0]], 100.);
+        assert_eq!(modified[[1]], 300.);
+
+        // Unsorted, mismatched labels
+        let mut base = Patch::from_axes(vec![
+            Axis::new("item", vec![ Label(30), Label(10) ])
+        ]).unwrap();
+        let revision = Patch::new(vec![
+            Axis::new("item", vec![ Label(10), Label(30) ])
+        ], nd::arr1(&[300., 100.]).into_dyn()
+        ).unwrap();
+        base.apply(&revision).unwrap();
+    
+        let modified = base.to_dense();
+        assert_eq!(modified[[0]], 100.);
+        assert_eq!(modified[[1]], 300.);
+    }
+    
+    #[test]
+    fn patch_2d_apply() {
+        let item_axis = Axis::new("item", vec![ Label(1), Label(3) ]);
+        let store_axis = Axis::new("store", vec![ Label(-1), Label(-3) ]);
+
+        // Set along both axes
+        let mut base = Patch::from_axes(vec![
+            item_axis.clone(),
+            store_axis.clone()
+        ]).unwrap();
+        let revision = Patch::new(vec![
+            item_axis.clone(),
+            store_axis.clone()
+        ], nd::arr2(&[[100., 200.], [300., 400.]]).into_dyn()
+        ).unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert_eq!(modified[[0, 0]], 100.);
+        assert_eq!(modified[[0, 1]], 200.);
+        assert_eq!(modified[[1, 0]], 300.);
+        assert_eq!(modified[[1, 1]], 400.);
+    }    
 }
