@@ -20,11 +20,27 @@ impl Axis {
         }.check_distinct()
     }
 
+    /// Create a new named axis with a set of labels, assuming they are unique
+    pub(crate) fn new_unchecked<T: ToString>(name: T, labels: Vec<Label>) -> Axis {
+        Axis {
+            name: name.to_string(),
+            labels,
+        }
+    }
+
     /// Create an empty axis with just a name
     pub fn empty<T: ToString>(name: T) -> Axis {
         Axis {
             name: name.to_string(),
             labels: Vec::new(),
+        }
+    }
+
+    /// Create an axis from a consecutive range, useful for tests
+    pub fn range<T: ToString>(name: T, range: std::ops::Range<i64>) -> Axis {
+        Axis {
+            name: name.to_string(),
+            labels: range.into_iter().map(|x| Label(x)).collect()
         }
     }
 

@@ -14,10 +14,6 @@ pub enum StoiError {
     TooLarge(&'static str),
     #[error("invalid value: {0}")]
     InvalidValue(&'static str),
-    #[error("invalid value (expected {expected:?}, found {found:?})")]
-    InvalidHeader { expected: String, found: String },
-    #[error("unknown data store error")]
-    Unknown,
 }
 
 pub type Fallible<T> = Result<T, StoiError>;

@@ -121,8 +121,11 @@ impl<'t> Quilt<'t> {
             axes.push(axis);
             segments_by_axis.push(segments);
         }
-        // At this point we know how big the output will be
-        if axes.iter().map(|a| a.labels().len()).product::<usize>() > 256 << 20 {
+        // At this point we know how big the output will be.
+        // The error here is early to avoid the IO
+        // and we don't construct the patch (which would have noticed and raised the same error)
+        // in order to avoid holding memory longer
+        if axes.iter().map(|a| a.len()).product::<usize>() > 256 << 20 {
             return Err(StoiError::TooLarge(
                 "Patches must be 256 million elements or less (1GB of 32bit floats)",
             ));

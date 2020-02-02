@@ -2,6 +2,7 @@ use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray::ArrayD;
 use std::collections::HashMap;
+use num_traits::Zero;
 
 /// A tensor with labeled axes
 ///
@@ -16,20 +17,20 @@ use std::collections::HashMap;
 ///       - They might overlap other patches (it depends on the Quilt)
 ///   - A regular array of some datatype in the same order as the list of axes
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct Patch<Elem: Copy + Default> {
+pub struct Patch<Elem: Copy + Default + Zero> {
     /// Names and labels of the axes
     axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
     dense: ArrayD<Elem>,
 }
 
-impl<Elem: Copy + Default> Patch<Elem> {
+impl<Elem: Copy + Default + Zero> Patch<Elem> {
     /// Create a new patch from an array and some labels
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
     pub fn new(axes: Vec<Axis>, dense: ArrayD<Elem>) -> Fallible<Self> {
-        if axes.len() != dense.axes().count() {
+        if axes.len() != dense.ndim() {
             return Err(StoiError::InvalidValue(
                 "The number of labeled axes doesn't match the number of axes in the dense tensor.",
             ));
@@ -49,8 +50,18 @@ impl<Elem: Copy + Default> Patch<Elem> {
 
     /// Create a new empty patch given some axes
     pub fn from_axes(axes: Vec<Axis>) -> Fallible<Self> {
-        let elements = ArrayD::default(axes.iter().map(|a| a.len()).collect_vec());
-        Self::new(axes, elements)
+        let dims = axes.iter().map(|a| a.len()).collect_vec();
+        if dims.iter().product::<usize>() > 256 << 20 {
+            return Err(StoiError::TooLarge(
+                "Patches must be 256 million elements or less (1GB of 32bit floats)",
+            ));
+        }
+        Self::new(axes, ArrayD::default(dims))
+    }
+
+    /// How many dimensions in this patch
+    pub fn ndim(&self) -> usize {
+        self.dense.ndim()
     }
 
     /// Apply another patch to this one, changing `self` where it overlaps with `pat`.
@@ -63,7 +74,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
         {
             return Err(StoiError::InvalidValue("The axes of two patches don't match (broadcasting is not supported yet so they must match exactly)"));
         }
-        if self.dense.len() == 0 || pat.dense.len() == 0 {
+        if self.dense.is_empty() || pat.dense.is_empty() {
             // It's a no op either way
             return Ok(());
         }
@@ -149,6 +160,93 @@ impl<Elem: Copy + Default> Patch<Elem> {
     /// Render the patch as a dense array. This always copies the data.
     pub fn to_dense(&self) -> nd::ArrayD<Elem> {
         self.dense.clone()
+    }
+
+    /// Possibly compact the patch, removing unused labels
+    /// 
+    /// You can compact a source patch but not a target patch for an apply().
+    /// This is because if you compact the target, any data that would have been in the cut areas
+    /// will not be copied (which is probably not what you want).
+    /// 
+    /// Compacting will only occur if it saves at least 25% of the space, to save on copies.
+    /// For this reason it works in-place, so a copy is not always necessary.
+    /// 
+    ///     use stoicheia::{Axis, Patch};
+    ///     use ndarray::arr2;
+    ///     let mut p = Patch::new(vec![
+    ///         Axis::range("a", 0..2),
+    ///         Axis::range("b", 0..3)
+    ///     ], arr2(&[
+    ///         [ 3, 0, 5],
+    ///         [ 0, 0, 0]
+    ///     ]).into_dyn()).unwrap();
+    /// 
+    ///     p.compact();
+    /// 
+    ///     assert_eq!(
+    ///         p.to_dense(),
+    ///         arr2(&[
+    ///             [3, 5]
+    ///         ]).into_dyn());
+    pub fn compact(&mut self) {
+        // TODO: Profile if it's better to do one complex pass or multiple simple ones
+
+        // This is a ragged matrix, not a tensor
+        // It's (ndim, len-of-that-dim), and represents if we are going to keep that slice
+        let mut keep : Vec<Vec<bool>> = self.dense
+            .shape()
+            .iter()
+            .map(|&len| vec![false; len])
+            .collect();
+        
+        // Scan the tensor to check if it's empty
+        for (point, value) in self.dense.indexed_iter() {
+            for ax_ix in 0..self.ndim() {
+                keep[ax_ix][point[ax_ix]] |= !value.is_zero();
+            }
+        }
+
+        let keep_indices : Vec<Vec<usize>> = keep
+            .iter()
+            .map(|v| v
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &k)| if k { Some(i) } else { None })
+                .collect_vec()
+            )
+            .collect();
+        // The total number of elements in the new patch
+        let mut keep_lens : Vec<(usize, usize)> = keep_indices
+            .iter()
+            .map(|indices| indices.len())
+            .enumerate()
+            .collect();
+        let total_new_elements : usize = keep
+            .iter()
+            .map(|indices| indices.len())
+            .product();
+        
+        // If the juice is worth the squeeze
+        if total_new_elements / 3 >= self.dense.len() / 4 {
+            // Remove the most selective axes first
+            keep_lens.sort_unstable_by_key(|&(ax_ix, ct)| ct / self.dense.len_of(nd::Axis(ax_ix)));
+            for (ax_ix, _count) in keep_lens {
+                // Delete labels
+                self.axes[ax_ix] = Axis::new_unchecked(
+                    &self.axes[ax_ix].name,
+                    keep_indices[ax_ix]
+                        .iter()
+                        .map(|&i| self.axes[ax_ix].labels()[i])
+                        .collect()
+                );
+
+                // Delete elements
+                self.dense = self.dense.select(
+                    nd::Axis(ax_ix),
+                    &keep_indices[ax_ix]
+                );
+            }
+        }
     }
 }
 
