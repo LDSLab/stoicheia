@@ -69,10 +69,7 @@ fn append_axis(
     name: String,
     labels: Json<Vec<Label>>,
 ) -> Fallible<()> {
-    Ok(catalog.union_axis(&Axis::new(
-        name,
-        labels.into_inner(),
-    )?)?)
+    Ok(catalog.union_axis(&Axis::new(name, labels.into_inner())?)?)
 }
 
 /// Create the rocket server separate from launching it, so we can test it

@@ -17,7 +17,8 @@ impl Axis {
         Axis {
             name: name.to_string(),
             labels,
-        }.check_distinct()
+        }
+        .check_distinct()
     }
 
     /// Create a new named axis with a set of labels, assuming they are unique
@@ -40,16 +41,18 @@ impl Axis {
     pub fn range<T: ToString>(name: T, range: std::ops::Range<i64>) -> Axis {
         Axis {
             name: name.to_string(),
-            labels: range.into_iter().map(|x| Label(x)).collect()
+            labels: range.into_iter().map(|x| Label(x)).collect(),
         }
     }
 
     /// Check if the Axis has no duplicates. O(n) complexity. Useful to check after deserialization.
-    /// 
+    ///
     /// It takes its value because if it isn't distinct it probably shouldn't exist anyway
     pub fn check_distinct(self) -> Fallible<Self> {
         if self.labels.iter().collect::<HashSet<_>>().len() != self.labels.len() {
-            Err(StoiError::InvalidValue("Axis labels must not be duplicated"))
+            Err(StoiError::InvalidValue(
+                "Axis labels must not be duplicated",
+            ))
         } else {
             Ok(self)
         }

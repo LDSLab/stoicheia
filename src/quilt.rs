@@ -3,9 +3,7 @@ use itertools::Itertools;
 use std::collections::HashSet;
 use std::convert::TryFrom;
 
-use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Catalog, Patch, PatchID, PatchRequest,
-};
+use crate::{Axis, AxisSegment, AxisSelection, BoundingBox, Catalog, Patch, PatchID, PatchRequest};
 
 /// Metadata about a quilt
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -88,10 +86,7 @@ impl<'t> Quilt<'t> {
                         .position(|&x| x == end)
                         .unwrap_or(axis.len() - start_ix);
                 (
-                    Axis::new(
-                        &axis.name,
-                        Vec::from(&lab[start_ix..=end_ix]),
-                    )?,
+                    Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
                     vec![start_ix..=end_ix],
                 )
             }

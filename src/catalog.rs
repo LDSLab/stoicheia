@@ -141,7 +141,9 @@ impl Catalog for MemoryCatalog {
     fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
         // Find the existing axis
         let mut axes = self.axes.lock().expect("Memory catalog is corrupted.");
-        let existing_axis = axes.entry(new_axis.name.clone()).or_insert_with(|| Axis::empty(&new_axis.name));
+        let existing_axis = axes
+            .entry(new_axis.name.clone())
+            .or_insert_with(|| Axis::empty(&new_axis.name));
 
         existing_axis.union(new_axis);
         Ok(())

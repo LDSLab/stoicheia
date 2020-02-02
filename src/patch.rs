@@ -1,8 +1,8 @@
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray::ArrayD;
-use std::collections::HashMap;
 use num_traits::Zero;
+use std::collections::HashMap;
 
 /// A tensor with labeled axes
 ///
@@ -163,14 +163,14 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
     }
 
     /// Possibly compact the patch, removing unused labels
-    /// 
+    ///
     /// You can compact a source patch but not a target patch for an apply().
     /// This is because if you compact the target, any data that would have been in the cut areas
     /// will not be copied (which is probably not what you want).
-    /// 
+    ///
     /// Compacting will only occur if it saves at least 25% of the space, to save on copies.
     /// For this reason it works in-place, so a copy is not always necessary.
-    /// 
+    ///
     ///     use stoicheia::{Axis, Patch};
     ///     use ndarray::arr2;
     ///     let mut p = Patch::new(vec![
@@ -180,9 +180,9 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
     ///         [ 3, 0, 5],
     ///         [ 0, 0, 0]
     ///     ]).into_dyn()).unwrap();
-    /// 
+    ///
     ///     p.compact();
-    /// 
+    ///
     ///     assert_eq!(
     ///         p.to_dense(),
     ///         arr2(&[
@@ -193,12 +193,13 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
 
         // This is a ragged matrix, not a tensor
         // It's (ndim, len-of-that-dim), and represents if we are going to keep that slice
-        let mut keep : Vec<Vec<bool>> = self.dense
+        let mut keep: Vec<Vec<bool>> = self
+            .dense
             .shape()
             .iter()
             .map(|&len| vec![false; len])
             .collect();
-        
+
         // Scan the tensor to check if it's empty
         for (point, value) in self.dense.indexed_iter() {
             for ax_ix in 0..self.ndim() {
@@ -206,26 +207,23 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
             }
         }
 
-        let keep_indices : Vec<Vec<usize>> = keep
+        let keep_indices: Vec<Vec<usize>> = keep
             .iter()
-            .map(|v| v
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &k)| if k { Some(i) } else { None })
-                .collect_vec()
-            )
+            .map(|v| {
+                v.iter()
+                    .enumerate()
+                    .filter_map(|(i, &k)| if k { Some(i) } else { None })
+                    .collect_vec()
+            })
             .collect();
         // The total number of elements in the new patch
-        let mut keep_lens : Vec<(usize, usize)> = keep_indices
+        let mut keep_lens: Vec<(usize, usize)> = keep_indices
             .iter()
             .map(|indices| indices.len())
             .enumerate()
             .collect();
-        let total_new_elements : usize = keep
-            .iter()
-            .map(|indices| indices.len())
-            .product();
-        
+        let total_new_elements: usize = keep.iter().map(|indices| indices.len()).product();
+
         // If the juice is worth the squeeze
         if total_new_elements / 3 >= self.dense.len() / 4 {
             // Remove the most selective axes first
@@ -237,14 +235,11 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
                     keep_indices[ax_ix]
                         .iter()
                         .map(|&i| self.axes[ax_ix].labels()[i])
-                        .collect()
+                        .collect(),
                 );
 
                 // Delete elements
-                self.dense = self.dense.select(
-                    nd::Axis(ax_ix),
-                    &keep_indices[ax_ix]
-                );
+                self.dense = self.dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]);
             }
         }
     }
