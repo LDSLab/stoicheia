@@ -2,7 +2,6 @@
 
 #[macro_use]
 extern crate rocket;
-use failure::Fallible;
 use rocket::State;
 use rocket_contrib::json::Json;
 use std::collections::HashMap;
@@ -106,7 +105,7 @@ mod tests {
     use rocket::http::Status;
     use rocket::local::Client;
     use stoicheia::*;
-    
+
     #[test]
     fn quilt_axis_patch_test() {
         //
@@ -168,14 +167,12 @@ mod tests {
                 .dispatch();
             assert_eq!(response.status(), Status::Ok);
         }
-        
+
         {
             //
             // Retrieve an axis
             //
-            let mut response = client
-                .get("/axis/store")
-                .dispatch();
+            let mut response = client.get("/axis/store").dispatch();
             assert_eq!(response.status(), Status::Ok);
             assert_eq!(
                 response.body_string(),
@@ -226,7 +223,6 @@ mod tests {
                 .body(patch_text)
                 .dispatch();
             assert_eq!(response.status(), Status::Ok);
-
         }
 
         {
@@ -246,7 +242,6 @@ mod tests {
                 .dispatch();
             assert_eq!(response.status(), Status::Ok);
             assert_eq!(response.body_string(), Some(r#"{"axes":[{"name":"item","labels":[-4]},{"name":"store","labels":[3]},{"name":"day","labels":[12]}],"dense":{"v":1,"dim":[1,1,1],"data":[0.11]}}"#.into()));
-            
 
             let mut response = client
                 .post("/quilt/slice/sales")

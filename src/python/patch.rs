@@ -1,9 +1,7 @@
-use pyo3::prelude::*;
-use ndarray::prelude::*;
-use numpy::{IntoPyArray, PyArrayDyn};
 use super::PyAxis;
 use crate::Patch;
-use failure::Fallible;
+use numpy::{IntoPyArray, PyArrayDyn};
+use pyo3::prelude::*;
 
 #[pyclass]
 pub struct PyPatch {
@@ -16,9 +14,7 @@ impl PyPatch {
     #[new]
     pub fn new(obj: &PyRawObject, axes: &PyAxis) -> PyResult<()> {
         obj.init(PyPatch {
-            inner: Patch::from_axes(
-                vec![ axes.inner.clone() ]
-            ).unwrap()
+            inner: Patch::from_axes(vec![axes.inner.clone()])?,
         });
         Ok(())
     }

@@ -2,9 +2,9 @@ use crate::Label;
 use std::collections::HashSet;
 
 /// A sequence of signed integer labels uniquely mapping to indices of an axis
-/// 
+///
 /// The meaning and restrictions of the labels depend a lot on the context
-/// 
+///
 ///  - In a dense patch, it represents the storage order along one dimension,
 ///    and it needs to be unique.
 ///  - In a sparse patch, it is the coordinates of each populated cell,
@@ -19,7 +19,10 @@ pub struct Axis {
 impl Axis {
     /// Create a new named axis with a set of labels
     pub fn new<T: ToString>(name: T, labels: Vec<Label>) -> Axis {
-        Axis { name: name.to_string(), labels }
+        Axis {
+            name: name.to_string(),
+            labels,
+        }
     }
 
     /// Get the length of the underlying vector. This includes duplicates, if the Axis has any.
@@ -53,7 +56,7 @@ impl Axis {
     ///     assert_eq!(left.labels, vec![
     ///         Label(1), Label(2), Label(4), Label(5), Label(3), Label(7)
     ///     ]);
-    /// 
+    ///
     pub fn union(&mut self, other: &Axis) {
         // Hash to speed up duplicate search, and then add only new labels
         let hash: HashSet<_> = self.labels.iter().copied().collect();

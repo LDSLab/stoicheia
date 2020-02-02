@@ -1,11 +1,9 @@
 #![feature(is_sorted, result_cloned)]
 //! Sharded tensor storage and retrieval
 #[macro_use]
-extern crate failure;
-#[macro_use]
 extern crate serde_derive;
-extern crate rusqlite as sql;
 extern crate ndarray as nd;
+extern crate rusqlite as sql;
 
 mod patch;
 pub use patch::Patch;
@@ -19,11 +17,14 @@ pub use catalog::{Catalog, MemoryCatalog, SQLiteCatalog};
 mod axis;
 pub use axis::Axis;
 
-#[cfg(feature="python")]
+mod error;
+pub use error::{Fallible, StoiError};
+
+#[cfg(feature = "python")]
 mod python;
 
 /// A user-defined signed integer label for a particular component of an axis
-/// 
+///
 /// Labels of an axis may not be consecutive, and they define both the storage and retrieval order.
 /// This is important because we trust the user knows what items will be used together, and without
 /// this, patches may cluster meaningless groups of points.
@@ -82,6 +83,6 @@ pub enum AxisSelection {
 type AxisSegment = std::ops::RangeInclusive<usize>;
 
 /// An N-dimensional box referencing a contiguous region of multiple axes.
-/// 
+///
 /// Remember that in these boxes, storage indices (usize) are always consecutive, but labels (i64) may not be.
 pub struct BoundingBox(Vec<AxisSegment>);

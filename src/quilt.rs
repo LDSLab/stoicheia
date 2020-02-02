@@ -1,4 +1,4 @@
-use failure::{err_msg, Fallible};
+use crate::{Fallible, StoiError};
 use itertools::Itertools;
 use std::collections::HashSet;
 use std::convert::TryFrom;
@@ -102,10 +102,11 @@ impl<'t> Quilt<'t> {
     ///
     /// The tensor name is part of the patch so it doesn't need to be specified
     pub fn assemble(&mut self, request: PatchRequest) -> Fallible<Patch<f32>> {
-        ensure!(
-            !request.is_empty(),
-            err_msg("Patches must have at least one axis")
-        );
+        if request.is_empty() {
+            return Err(StoiError::InvalidValue(
+                "Patches must have at least one axis",
+            ));
+        }
 
         //
         // Find all the labels of the axes they are planning to use
@@ -121,10 +122,11 @@ impl<'t> Quilt<'t> {
             segments_by_axis.push(segments);
         }
         // At this point we know how big the output will be
-        ensure!(
-            axes.iter().map(|a| a.labels.len()).product::<usize>() <= 256 << 20,
-            err_msg("Patches must be 256 million elements or less (1GB of 32bit floats)")
-        );
+        if axes.iter().map(|a| a.labels.len()).product::<usize>() > 256 << 20 {
+            return Err(StoiError::TooLarge(
+                "Patches must be 256 million elements or less (1GB of 32bit floats)",
+            ));
+        }
 
         //
         // Find all bounding boxes we need to get the cartesian product of all the axis segments

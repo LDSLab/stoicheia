@@ -17,15 +17,15 @@ ndarray = { version= "0.13.0", features = ["serde"] }
 bincode = "1.2.1"
 serde_derive = "1.0.104"
 serde = "1.0.104"
-failure = "0.1.6"
 itertools = "0.8.2"
 rusqlite = "0.21.0"
 thread_local = "1.0.1"
 rand = "0.7.3"
+thiserror = "1.0.10"
 
 pyo3 = {version = "0.8.5", features=["extension-module"], optional = true}
 numpy = {version= "0.7.0", optional=true}
 
 [features]
-default = ["python"]
+default = []
 python = [ "pyo3", "numpy"]

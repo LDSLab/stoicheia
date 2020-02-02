@@ -1,12 +1,12 @@
-use pyo3::prelude::*;
+use crate::{Axis, Label};
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
-use crate::{Axis, Label};
+use pyo3::prelude::*;
 
 /// A sequence of signed integer labels uniquely mapping to indices of an axis
-/// 
+///
 /// The meaning and restrictions of the labels depend a lot on the context
-/// 
+///
 ///  - In a dense patch, it represents the storage order along one dimension,
 ///    and it needs to be unique.
 ///  - In a sparse patch, it is the coordinates of each populated cell,
@@ -19,15 +19,11 @@ pub struct PyAxis {
 }
 #[pymethods]
 impl PyAxis {
-
     /// Create a new named axis with a set of labels
     #[new]
     pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) {
         obj.init(PyAxis {
-            inner: Axis::new(
-                name,
-                labels.as_array().iter().map(|&i| Label(i)).collect(),
-            ),
+            inner: Axis::new(name, labels.as_array().iter().map(|&i| Label(i)).collect()),
         });
     }
 

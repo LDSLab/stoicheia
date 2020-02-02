@@ -1,4 +1,4 @@
-use failure::Fallible;
+use crate::Fallible;
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::HashMap;
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use thread_local::CachedThreadLocal;
 
-use crate::{Axis, BoundingBox, Patch, PatchID, Quilt, QuiltMeta};
+use crate::{Axis, BoundingBox, Patch, PatchID, Quilt, QuiltMeta, StoiError};
 
 pub trait Catalog: Send + Sync {
     /// Get a quilt by name
@@ -75,7 +75,7 @@ impl Catalog for MemoryCatalog {
             .lock()
             .expect("Memory catalog is corrupted.")
             .get(quilt_name)
-            .ok_or(format_err!("No such quilt {}", quilt_name))
+            .ok_or(StoiError::NotFound("quilt", quilt_name.into()))
             .cloned()
     }
     fn create_new_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
@@ -118,7 +118,7 @@ impl Catalog for MemoryCatalog {
             .lock()
             .expect("Memory catalog is corrupted")
             .get(&id)
-            .ok_or(format_err!("No such patch {:?}", id))
+            .ok_or(StoiError::NotFound("patch", id.0.to_string()))
             .cloned()
     }
     fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()> {
@@ -134,7 +134,7 @@ impl Catalog for MemoryCatalog {
             .lock()
             .expect("Memory catalog is corrupted.")
             .get(axis_name)
-            .ok_or(format_err!("No such axis {}", axis_name))
+            .ok_or(StoiError::NotFound("axis", axis_name.into()))
             .cloned()
     }
 
