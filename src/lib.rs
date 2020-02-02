@@ -19,6 +19,9 @@ pub use catalog::{Catalog, MemoryCatalog, SQLiteCatalog};
 mod axis;
 pub use axis::Axis;
 
+#[cfg(feature="python")]
+mod python;
+
 /// A user-defined signed integer label for a particular component of an axis
 /// 
 /// Labels of an axis may not be consecutive, and they define both the storage and retrieval order.

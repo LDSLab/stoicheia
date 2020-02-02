@@ -29,7 +29,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
-    pub fn new(mut axes: Vec<Axis>, dense: ArrayD<Elem>) -> Fallible<Self> {
+    pub fn new(axes: Vec<Axis>, dense: ArrayD<Elem>) -> Fallible<Self> {
         ensure!(
             axes.len() == dense.axes().count(),
             "The number of labeled axes doesn't match the number of axes in the dense tensor."
@@ -42,10 +42,10 @@ impl<Elem: Copy + Default> Patch<Elem> {
         );
 
         // Check that all the axis labels are unique
-        for (ax_ix, axis) in axes.iter_mut().enumerate() {
+        for axis in &axes {
             // Check that everything is distinct
             ensure!(
-                axis.labels.iter().collect::<HashSet<_>>().len() == axis.labels.len(),
+                axis.is_distinct(),
                 "The patch axis labels are not unique; they can't be duplicated."
             );
         }
