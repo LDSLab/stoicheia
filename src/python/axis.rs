@@ -3,16 +3,11 @@ use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
 
-/// A sequence of signed integer labels uniquely mapping to indices of an axis
+/// A sequence of distinct signed integer labels uniquely mapping to indices of an axis
 ///
-/// The meaning and restrictions of the labels depend a lot on the context
-///
-///  - In a dense patch, it represents the storage order along one dimension,
-///    and it needs to be unique.
-///  - In a sparse patch, it is the coordinates of each populated cell,
-///    and it does not need to be unique.
-///  - In a catalog, it determines storage order for all the quilts,
-///    and it needs to be unique.
+///  - In a dense patch, it represents the storage order along one dimension
+///  - In a catalog, it determines storage order for all the quilts
+///  - If fully sparse patches are supported in the future, axes may then be permitted to repeat
 #[pyclass]
 pub struct PyAxis {
     pub inner: Axis,

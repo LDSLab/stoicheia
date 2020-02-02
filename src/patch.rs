@@ -37,21 +37,11 @@ impl<Elem: Copy + Default> Patch<Elem> {
         if !axes
             .iter()
             .zip(dense.axes())
-            .all(|(ax, d_ax)| ax.labels.len() == d_ax.len())
+            .all(|(ax, d_ax)| ax.len() == d_ax.len())
         {
             return Err(StoiError::InvalidValue(
                 "The shape of the axis labels doesn't match the shape of the dense tensor.",
             ));
-        }
-
-        // Check that all the axis labels are unique
-        for axis in &axes {
-            // Check that everything is distinct
-            if !axis.is_distinct() {
-                return Err(StoiError::InvalidValue(
-                    "The patch axis labels are not unique; they can't be duplicated.",
-                ));
-            }
         }
 
         Ok(Self { axes, dense })
@@ -59,7 +49,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
 
     /// Create a new empty patch given some axes
     pub fn from_axes(axes: Vec<Axis>) -> Fallible<Self> {
-        let elements = ArrayD::default(axes.iter().map(|a| a.labels.len()).collect_vec());
+        let elements = ArrayD::default(axes.iter().map(|a| a.len()).collect_vec());
         Self::new(axes, elements)
     }
 
@@ -116,7 +106,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
         let mut label_shuffles = vec![];
         for ax_ix in 0..shard.ndim() {
             let pat_label_to_idx: HashMap<Label, usize> = shard_axes[ax_ix]
-                .labels
+                .labels()
                 .iter()
                 .copied()
                 .enumerate()
@@ -124,7 +114,7 @@ impl<Elem: Copy + Default> Patch<Elem> {
                 .collect();
             label_shuffles.push(
                 self.axes[ax_ix]
-                    .labels
+                    .labels()
                     .iter()
                     .map(|l| pat_label_to_idx.get(l).copied())
                     .collect::<Vec<Option<usize>>>(),
@@ -169,7 +159,7 @@ mod test {
 
     #[test]
     fn patch_1d_apply() {
-        let item_axis = Axis::new("item", vec![Label(1), Label(3)]);
+        let item_axis = Axis::new("item", vec![Label(1), Label(3)]).unwrap();
 
         // Set both elements
         let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
@@ -183,7 +173,7 @@ mod test {
         // Set one but miss the other
         let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(1), Label(2)])],
+            vec![Axis::new("item", vec![Label(1), Label(2)]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -195,7 +185,7 @@ mod test {
         // Miss both
         let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(10), Label(30)])],
+            vec![Axis::new("item", vec![Label(10), Label(30)]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -207,9 +197,9 @@ mod test {
 
         // Unsorted labels
         let mut base =
-            Patch::from_axes(vec![Axis::new("item", vec![Label(30), Label(10)])]).unwrap();
+            Patch::from_axes(vec![Axis::new("item", vec![Label(30), Label(10)]).unwrap()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(30), Label(10)])],
+            vec![Axis::new("item", vec![Label(30), Label(10)]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -221,9 +211,9 @@ mod test {
 
         // Unsorted, mismatched labels
         let mut base =
-            Patch::from_axes(vec![Axis::new("item", vec![Label(30), Label(10)])]).unwrap();
+            Patch::from_axes(vec![Axis::new("item", vec![Label(30), Label(10)]).unwrap()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(10), Label(30)])],
+            vec![Axis::new("item", vec![Label(10), Label(30)]).unwrap()],
             nd::arr1(&[300., 100.]).into_dyn(),
         )
         .unwrap();
@@ -236,8 +226,8 @@ mod test {
 
     #[test]
     fn patch_2d_apply() {
-        let item_axis = Axis::new("item", vec![Label(1), Label(3)]);
-        let store_axis = Axis::new("store", vec![Label(-1), Label(-3)]);
+        let item_axis = Axis::new("item", vec![Label(1), Label(3)]).unwrap();
+        let store_axis = Axis::new("store", vec![Label(-1), Label(-3)]).unwrap();
 
         // Set along both axes
         let mut base = Patch::from_axes(vec![item_axis.clone(), store_axis.clone()]).unwrap();

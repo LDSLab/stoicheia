@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::convert::TryFrom;
 
 use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Catalog, Label, Patch, PatchID, PatchRequest,
+    Axis, AxisSegment, AxisSelection, BoundingBox, Catalog, Patch, PatchID, PatchRequest,
 };
 
 /// Metadata about a quilt
@@ -55,43 +55,43 @@ impl<'t> Quilt<'t> {
         Ok(match sel {
             AxisSelection::All { name } => {
                 let axis = self.catalog.get_axis(&name)?;
-                let full_range = 0..=axis.labels.len();
+                let full_range = 0..=axis.len();
                 (axis, vec![full_range])
             }
             AxisSelection::Labels { name, labels } => {
                 // TODO: Profile this - it could be a performance issue
                 let axis: Axis = self.catalog.get_axis(&name)?;
-                let label_hash: HashSet<Label> = labels.iter().copied().collect();
+                let labelset = axis.labelset();
                 let start_ix = axis
-                    .labels
+                    .labels()
                     .iter()
-                    .position(|x| label_hash.contains(x))
-                    .unwrap_or(axis.labels.len());
-                let end_ix = axis.labels[start_ix..]
+                    .position(|x| labelset.contains(&x))
+                    .unwrap_or(axis.len());
+                let end_ix = axis.labels()[start_ix..]
                     .iter()
-                    .rposition(|x| label_hash.contains(x))
+                    .rposition(|x| labelset.contains(&x))
                     .unwrap_or(0);
-                (Axis::new(name, labels), vec![start_ix..=end_ix])
+                (Axis::new(name, labels)?, vec![start_ix..=end_ix])
             }
             AxisSelection::RangeInclusive { name, start, end } => {
                 // Axis labels are not guaranteed to be sorted because it may be optimized for storage, not lookup
                 let axis: Axis = self.catalog.get_axis(&name)?;
-                let start_ix = axis
-                    .labels
+                let lab = axis.labels();
+                let start_ix = lab
                     .iter()
                     .position(|&x| x == start)
                     // If we can't find that label we don't search anything
-                    .unwrap_or(axis.labels.len());
+                    .unwrap_or(axis.len());
                 let end_ix = start_ix
-                    + axis.labels[start_ix..]
+                    + lab[start_ix..]
                         .iter()
                         .position(|&x| x == end)
-                        .unwrap_or(axis.labels.len() - start_ix);
+                        .unwrap_or(axis.len() - start_ix);
                 (
-                    Axis {
-                        name: axis.name,
-                        labels: Vec::from(&axis.labels[start_ix..=end_ix]),
-                    },
+                    Axis::new(
+                        &axis.name,
+                        Vec::from(&lab[start_ix..=end_ix]),
+                    )?,
                     vec![start_ix..=end_ix],
                 )
             }
@@ -122,7 +122,7 @@ impl<'t> Quilt<'t> {
             segments_by_axis.push(segments);
         }
         // At this point we know how big the output will be
-        if axes.iter().map(|a| a.labels.len()).product::<usize>() > 256 << 20 {
+        if axes.iter().map(|a| a.labels().len()).product::<usize>() > 256 << 20 {
             return Err(StoiError::TooLarge(
                 "Patches must be 256 million elements or less (1GB of 32bit floats)",
             ));

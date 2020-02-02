@@ -1,43 +1,57 @@
-use crate::Label;
+use crate::{Fallible, Label, StoiError};
 use std::collections::HashSet;
 
-/// A sequence of signed integer labels uniquely mapping to indices of an axis
+/// A sequence of distinct signed integer labels uniquely mapping to indices of an axis
 ///
-/// The meaning and restrictions of the labels depend a lot on the context
-///
-///  - In a dense patch, it represents the storage order along one dimension,
-///    and it needs to be unique.
-///  - In a sparse patch, it is the coordinates of each populated cell,
-///    and it does not need to be unique.
-///  - In a catalog, it determines storage order for all the quilts,
-///    and it needs to be unique.
+///  - In a dense patch, it represents the storage order along one dimension
+///  - In a catalog, it determines storage order for all the quilts
+///  - If fully sparse patches are supported in the future, axes may then be permitted to repeat
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 pub struct Axis {
     pub name: String,
-    pub labels: Vec<Label>,
+    labels: Vec<Label>,
 }
 impl Axis {
     /// Create a new named axis with a set of labels
-    pub fn new<T: ToString>(name: T, labels: Vec<Label>) -> Axis {
+    pub fn new<T: ToString>(name: T, labels: Vec<Label>) -> Fallible<Axis> {
         Axis {
             name: name.to_string(),
             labels,
+        }.check_distinct()
+    }
+
+    /// Create an empty axis with just a name
+    pub fn empty<T: ToString>(name: T) -> Axis {
+        Axis {
+            name: name.to_string(),
+            labels: Vec::new(),
         }
     }
 
-    /// Get the length of the underlying vector. This includes duplicates, if the Axis has any.
+    /// Check if the Axis has no duplicates. O(n) complexity. Useful to check after deserialization.
+    /// 
+    /// It takes its value because if it isn't distinct it probably shouldn't exist anyway
+    pub fn check_distinct(self) -> Fallible<Self> {
+        if self.labels.iter().collect::<HashSet<_>>().len() != self.labels.len() {
+            Err(StoiError::InvalidValue("Axis labels must not be duplicated"))
+        } else {
+            Ok(self)
+        }
+    }
+
+    /// Get a reference to the labels
+    pub fn labels(&self) -> &[Label] {
+        &self.labels
+    }
+
+    /// Get a reference to the labels, which is O(n) to construct a hashset
+    pub fn labelset(&self) -> HashSet<Label> {
+        self.labels.iter().copied().collect()
+    }
+
+    /// Get the number of selected labels in this axis (in most cases this is not all possible labels)
     pub fn len(&self) -> usize {
         self.labels.len()
-    }
-
-    /// Get how many unique labels are in the axis, discarding duplicates. O(n) complexity
-    pub fn distinct_len(&self) -> usize {
-        self.labels.iter().collect::<HashSet<_>>().len()
-    }
-
-    /// Check if the Axis has no duplicates. O(n) complexity
-    pub fn is_distinct(&self) -> bool {
-        self.distinct_len() == self.len()
     }
 
     /// Merge the labels of two axes, removing duplicates and appending new elements
@@ -48,12 +62,12 @@ impl Axis {
     ///     use stoicheia::{Axis, Label};
     ///     let mut left = Axis::new("a", vec![
     ///         Label(1), Label(2), Label(4), Label(5)
-    ///     ]);
+    ///     ]).unwrap();
     ///     let right = Axis::new("a", vec![
     ///         Label(1), Label(3), Label(7)
-    ///     ]);
+    ///     ]).unwrap();
     ///     left.union(&right);
-    ///     assert_eq!(left.labels, vec![
+    ///     assert_eq!(left.labels(), &[
     ///         Label(1), Label(2), Label(4), Label(5), Label(3), Label(7)
     ///     ]);
     ///
