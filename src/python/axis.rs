@@ -1,4 +1,3 @@
-use crate::{Axis, Fallible, Label};
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
@@ -9,16 +8,16 @@ use pyo3::prelude::*;
 ///  - In a catalog, it determines storage order for all the quilts
 ///  - If fully sparse patches are supported in the future, axes may then be permitted to repeat
 #[pyclass]
-pub struct PyAxis {
-    pub inner: Axis,
+pub struct Axis {
+    pub inner: crate::Axis,
 }
 #[pymethods]
-impl PyAxis {
+impl Axis {
     /// Create a new named axis with a set of labels
     #[new]
     pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) -> PyResult<()> {
-        obj.init(PyAxis {
-            inner: Axis::new(name, labels.as_array().iter().map(|&i| Label(i)).collect())?,
+        obj.init(Self {
+            inner: crate::Axis::new(name, labels.as_array().iter().map(|&i| crate::Label(i)).collect())?,
         });
         Ok(())
     }
@@ -39,7 +38,7 @@ impl PyAxis {
     ///
     /// This will not change labels in self, because downstream that means patches would need to
     /// be rebuilt, in the case of a catalog-level Axis.
-    pub fn union(&mut self, other: &PyAxis) {
+    pub fn union(&mut self, other: &Self) {
         self.inner.union(&other.inner);
     }
 }

@@ -1,4 +1,4 @@
-use crate::*;
+use crate::error::StoiError;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
@@ -6,8 +6,8 @@ use pyo3::prelude::*;
 mod axis;
 mod patch;
 
-pub use axis::PyAxis;
-pub use patch::PyPatch;
+pub use axis::Axis;
+pub use patch::Patch;
 
 #[pymodule]
 fn stoicheia(_py: Python, m: &PyModule) -> PyResult<()> {
@@ -41,8 +41,8 @@ fn stoicheia(_py: Python, m: &PyModule) -> PyResult<()> {
         mult(a, x);
         Ok(())
     }
-    m.add_class::<axis::PyAxis>()?;
-    m.add_class::<patch::PyPatch>()?;
+    m.add_class::<crate::python::axis::Axis>()?;
+    m.add_class::<crate::python::patch::Patch>()?;
     Ok(())
 }
 

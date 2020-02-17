@@ -1,32 +1,30 @@
-use super::PyAxis;
-use crate::{Fallible, Patch};
 use numpy::{IntoPyArray, PyArray1, PyArrayDyn};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 #[pyclass]
-pub struct PyPatch {
-    pub inner: Patch<f32>,
+pub struct Patch {
+    pub inner: crate::Patch<f32>,
 }
 
 #[pymethods]
-impl PyPatch {
+impl Patch {
     /// Create a new dense patch from a set of labels
     #[new]
     pub fn new(obj: &PyRawObject, axes: &PyList) -> PyResult<()> {
-        let axes: Vec<&PyAxis> = axes.extract()?;
-        obj.init(PyPatch {
-            inner: Patch::from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
+        let axes: Vec<&super::Axis> = axes.extract()?;
+        obj.init(Self {
+            inner: crate::Patch::from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
         });
         Ok(())
     }
 
     /// Create a new patch from axes
     #[staticmethod]
-    pub fn from_axes(axes: &PyList) -> PyResult<PyPatch> {
-        let axes: Vec<&PyAxis> = axes.extract()?;
-        Ok(PyPatch {
-            inner: Patch::from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
+    pub fn from_axes(axes: &PyList) -> PyResult<Self> {
+        let axes: Vec<&super::Axis> = axes.extract()?;
+        Ok(Self {
+            inner: crate::Patch::from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
         })
     }
 
