@@ -13,7 +13,7 @@ pub enum StoiError {
     #[error("resource request is too large: {0}")]
     TooLarge(&'static str),
     #[error("invalid value: {0}")]
-    InvalidValue(&'static str)
+    InvalidValue(&'static str),
 }
 
 pub type Fallible<T> = Result<T, StoiError>;

@@ -1,4 +1,4 @@
-use crate::{Axis, Label, Fallible};
+use crate::{Axis, Fallible, Label};
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;

@@ -157,11 +157,6 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
         Ok(())
     }
 
-    /// Render the patch as a dense array. This always copies the data.
-    pub fn to_dense(&self) -> nd::ArrayD<Elem> {
-        self.dense.clone()
-    }
-
     /// Possibly compact the patch, removing unused labels
     ///
     /// You can compact a source patch but not a target patch for an apply().
@@ -242,6 +237,26 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
                 self.dense = self.dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]);
             }
         }
+    }
+
+    /// Render the patch as a dense array. This always copies the data.
+    pub fn to_dense(&self) -> nd::ArrayD<Elem> {
+        self.dense.clone()
+    }
+
+    /// Get a reference to the content
+    pub fn content(&self) -> nd::ArrayViewD<Elem> {
+        self.dense.view()
+    }
+
+    /// Get a mutable reference to the content
+    pub fn content_mut(&mut self) -> nd::ArrayViewMutD<Elem> {
+        self.dense.view_mut()
+    }
+
+    /// Get a shared reference to the axes within
+    pub fn axes(&self) -> &[Axis] {
+        &self.axes
     }
 }
 
