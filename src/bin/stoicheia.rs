@@ -39,8 +39,7 @@ fn get_patch(
 ) -> Fallible<Json<Patch<f32>>> {
     Ok(Json(
         catalog
-            .get_quilt(&quilt_name)?
-            .assemble(patch_request.into_inner())?,
+            .assemble(&quilt_name, patch_request.into_inner())?,
     ))
 }
 
