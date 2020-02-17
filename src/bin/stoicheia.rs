@@ -108,7 +108,7 @@ mod tests {
         //
         // Create and retrieve quilts, axes, and patches
         //
-        let catalog = MemoryCatalog::new();
+        let catalog = SQLiteCatalog::connect_in_memory();
         let client = Client::new(make_rocket(catalog)).expect("valid rocket instance");
 
         {

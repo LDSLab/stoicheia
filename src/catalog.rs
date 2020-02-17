@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use thread_local::CachedThreadLocal;
 
 use crate::{Axis, BoundingBox, Patch, PatchID, Quilt, QuiltMeta, StoiError};
@@ -46,108 +46,6 @@ pub trait Catalog: Send + Sync {
 
     /// Replace the labels of an axis, in the order you would expect them to be stored
     fn union_axis(&self, axis: &Axis) -> Fallible<()>;
-}
-
-/// An in-memory catalog, meant for testing and dummy databases
-pub struct MemoryCatalog {
-    quilts: Mutex<HashMap<String, QuiltMeta>>,
-    patches: Mutex<HashMap<PatchID, Patch<f32>>>,
-    axes: Mutex<HashMap<String, Axis>>,
-}
-impl MemoryCatalog {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            quilts: Mutex::from(HashMap::new()),
-            patches: Mutex::from(HashMap::new()),
-            axes: Mutex::from(HashMap::new()),
-        })
-    }
-}
-impl Catalog for MemoryCatalog {
-    fn get_quilt(&self, quilt_name: &str) -> Fallible<Quilt> {
-        // Make sure it exists
-        self.get_quilt_meta(quilt_name)?;
-        Ok(Quilt::new(quilt_name.into(), self))
-    }
-
-    fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta> {
-        self.quilts
-            .lock()
-            .expect("Memory catalog is corrupted.")
-            .get(quilt_name)
-            .ok_or(StoiError::NotFound("quilt", quilt_name.into()))
-            .cloned()
-    }
-    fn create_new_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
-        self.quilts
-            .lock()
-            .expect("Memory catalog is corrupted.")
-            .insert(meta.name.clone(), meta);
-        Ok(())
-    }
-    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltMeta>> {
-        Ok(self
-            .quilts
-            .lock()
-            .expect("Memory catalog is corrupted")
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect())
-    }
-
-    fn get_patches_by_bounding_box(
-        &self,
-        _quilt_name: &str,
-        _bound: &BoundingBox,
-    ) -> Fallible<Box<dyn Iterator<Item = PatchID>>> {
-        // This stub is hilariously memory inefficient but it's intended mostly for testing
-        Ok(Box::new(
-            self.patches
-                .lock()
-                .expect("Memory catalog is corrupted")
-                .keys()
-                .copied()
-                // Copy, collect, and reiterate so that we can avoid keeping the mutex locked
-                .collect_vec()
-                .into_iter(),
-        ))
-    }
-
-    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
-        self.patches
-            .lock()
-            .expect("Memory catalog is corrupted")
-            .get(&id)
-            .ok_or(StoiError::NotFound("patch", id.0.to_string()))
-            .cloned()
-    }
-    fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()> {
-        self.patches
-            .lock()
-            .expect("Memory catalog is corrupted")
-            .insert(id, pat);
-        Ok(())
-    }
-
-    fn get_axis(&self, axis_name: &str) -> Fallible<Axis> {
-        self.axes
-            .lock()
-            .expect("Memory catalog is corrupted.")
-            .get(axis_name)
-            .ok_or(StoiError::NotFound("axis", axis_name.into()))
-            .cloned()
-    }
-
-    fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
-        // Find the existing axis
-        let mut axes = self.axes.lock().expect("Memory catalog is corrupted.");
-        let existing_axis = axes
-            .entry(new_axis.name.clone())
-            .or_insert_with(|| Axis::empty(&new_axis.name));
-
-        existing_axis.union(new_axis);
-        Ok(())
-    }
 }
 
 /// List of available tensors

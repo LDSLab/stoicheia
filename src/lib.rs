@@ -12,7 +12,7 @@ mod quilt;
 pub use quilt::{Quilt, QuiltMeta};
 
 mod catalog;
-pub use catalog::{Catalog, MemoryCatalog, SQLiteCatalog};
+pub use catalog::{Catalog, SQLiteCatalog};
 
 mod axis;
 pub use axis::Axis;

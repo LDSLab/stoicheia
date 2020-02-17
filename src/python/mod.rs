@@ -2,6 +2,7 @@ use crate::error::StoiError;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
+use std::sync::Arc;
 
 mod axis;
 mod patch;
@@ -43,6 +44,7 @@ fn stoicheia(_py: Python, m: &PyModule) -> PyResult<()> {
     }
     m.add_class::<crate::python::axis::Axis>()?;
     m.add_class::<crate::python::patch::Patch>()?;
+    m.add_class::<Catalog>()?;
     Ok(())
 }
 
@@ -50,5 +52,29 @@ fn stoicheia(_py: Python, m: &PyModule) -> PyResult<()> {
 impl From<crate::StoiError> for PyErr {
     fn from(s: StoiError) -> PyErr {
         PyErr::new::<pyo3::exceptions::ValueError, _>(s.to_string())
+    }
+}
+
+#[pyclass]
+struct Catalog{
+    inner: Arc<crate::SQLiteCatalog>
+}
+
+#[pymethods]
+impl Catalog {
+    /// Create a new catalog by connecting to a URL
+    /// 
+    /// Or if you provide a file path, you'll get an SQLite based catalog.
+    /// If you provide nothing, you'll get an in-memory SQLite based catalog.
+    #[new]
+    pub fn new(obj: &PyRawObject, url: Option<String>) -> PyResult<()> {
+        let cat = match url {
+            Some(path) => crate::SQLiteCatalog::connect(path.into())?,
+            None => crate::SQLiteCatalog::connect_in_memory()?
+        };
+        obj.init(Self {
+            inner: cat
+        });
+        Ok(())
     }
 }
