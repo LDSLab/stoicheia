@@ -22,8 +22,8 @@ fn get_quilt_meta(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Js
 }
 
 #[post("/catalog", format = "json", data = "<meta>")]
-fn create_new_quilt(catalog: State<Arc<dyn Catalog>>, meta: Json<QuiltMeta>) -> Fallible<()> {
-    Ok(catalog.create_new_quilt(meta.into_inner())?)
+fn create_quilt(catalog: State<Arc<dyn Catalog>>, meta: Json<QuiltMeta>) -> Fallible<()> {
+    Ok(catalog.create_quilt(meta.into_inner())?)
 }
 
 //
@@ -39,7 +39,7 @@ fn get_patch(
 ) -> Fallible<Json<Patch<f32>>> {
     Ok(Json(
         catalog
-            .assemble(&quilt_name, patch_request.into_inner())?,
+            .fetch(&quilt_name, patch_request.into_inner())?,
     ))
 }
 
@@ -79,7 +79,7 @@ fn make_rocket(cat: Arc<dyn Catalog>) -> rocket::Rocket {
             routes![
                 list_catalog,
                 get_quilt_meta,
-                create_new_quilt,
+                create_quilt,
                 get_patch,
                 apply_patch,
                 get_axis,
