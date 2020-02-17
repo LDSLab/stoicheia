@@ -7,6 +7,7 @@ use rocket_contrib::json::Json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use stoicheia::*;
+use itertools::Itertools;
 
 //
 // Catalog and Quilt metadata
@@ -21,9 +22,16 @@ fn get_quilt_meta(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Js
     Ok(Json(catalog.get_quilt_meta(&name)?))
 }
 
-#[post("/catalog", format = "json", data = "<meta>")]
-fn create_quilt(catalog: State<Arc<dyn Catalog>>, meta: Json<QuiltMeta>) -> Fallible<()> {
-    Ok(catalog.create_quilt(meta.into_inner())?)
+#[post("/catalog/<name>", format = "json", data = "<axes>")]
+fn create_quilt(catalog: State<Arc<dyn Catalog>>, name: String, axes: Json<Vec<String>>) -> Fallible<()> {
+    Ok(catalog.create_quilt(
+        &name,
+        &axes
+            .into_inner()
+            .iter()
+            .map(|s| s.as_ref())
+            .collect_vec()[..]
+    )?)
 }
 
 //

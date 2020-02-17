@@ -17,7 +17,7 @@ pub trait Catalog: Send + Sync {
     fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta>;
 
     /// Create a new quilt
-    fn create_quilt(&self, meta: QuiltMeta) -> Fallible<()>;
+    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str]) -> Fallible<()>;
 
     /// List all the quilts in the catalog
     fn list_quilts(&self) -> Fallible<HashMap<String, QuiltMeta>>;
@@ -280,10 +280,10 @@ impl Catalog for SQLiteCatalog {
         Ok(map)
     }
 
-    fn create_quilt(&self, meta: QuiltMeta) -> Fallible<()> {
+    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str]) -> Fallible<()> {
         self.get_conn()?.execute(
             "INSERT INTO quilt(quilt_name, axes) VALUES (?, ?);",
-            &[&meta.name, &serde_json::to_string(&meta.axes)?],
+            &[&quilt_name, &serde_json::to_string(axes_names)?.as_ref()],
         )?;
         Ok(())
     }
