@@ -1,4 +1,4 @@
-use crate::{Axis, Label};
+use crate::{Axis, Label, Fallible};
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
@@ -16,16 +16,17 @@ pub struct PyAxis {
 impl PyAxis {
     /// Create a new named axis with a set of labels
     #[new]
-    pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) {
+    pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) -> PyResult<()> {
         obj.init(PyAxis {
-            inner: Axis::new(name, labels.as_array().iter().map(|&i| Label(i)).collect()),
+            inner: Axis::new(name, labels.as_array().iter().map(|&i| Label(i)).collect())?,
         });
+        Ok(())
     }
 
     /// Get a copy of the integer labels associated with each element of this axis
     pub fn labels(&self, py: Python) -> Py<PyArrayDyn<i64>> {
         self.inner
-            .labels
+            .labels()
             .iter()
             .map(|label| label.0)
             .collect::<Array1<i64>>()
