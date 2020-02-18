@@ -10,7 +10,7 @@ pub struct Patch {
 #[pymethods]
 impl Patch {
     /// Create a new patch from label axes and content
-    /// 
+    ///
     /// This copies the content and labels to prevent mutation,
     /// so it's not very efficient.
     #[new]
@@ -23,10 +23,10 @@ impl Patch {
     }
 
     /// Create a new patch from label axes and content
-    /// 
+    ///
     /// The shape of the new patch will be the lengths of the axes, so be careful,
     /// it's easy to create huge tensors by accident this way.
-    /// 
+    ///
     /// It makes a copy of the axes, which is usually fine.
     #[staticmethod]
     pub fn from_axes(axes: &PyList) -> PyResult<Self> {
@@ -37,19 +37,16 @@ impl Patch {
     }
 
     /// Export this patch to a list of axes and a content array
-    /// 
+    ///
     /// This copies the content to prevent mutation, so it's not very efficient.
     pub fn export<'py>(&self, py: Python<'py>) -> (Vec<&'py PyArray1<i64>>, Py<PyArrayDyn<f32>>) {
         (
             self.inner
                 .axes()
                 .iter()
-                .map(|a| PyArray1::from_slice(py,
-                    &a.labels()
-                    .iter()
-                    .map(|l| l.0)
-                    .collect::<Vec<_>>()
-                ))
+                .map(|a| {
+                    PyArray1::from_slice(py, &a.labels().iter().map(|l| l.0).collect::<Vec<_>>())
+                })
                 .collect(),
             self.inner.to_dense().into_pyarray(py).to_owned(),
         )

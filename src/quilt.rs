@@ -45,5 +45,4 @@ impl<'t> Quilt<'t> {
         self.catalog.put_patch(PatchID(rand::random()), pat)?;
         Ok(())
     }
-
 }

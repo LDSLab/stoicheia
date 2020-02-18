@@ -17,7 +17,10 @@ impl Axis {
     #[new]
     pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) -> PyResult<()> {
         obj.init(Self {
-            inner: crate::Axis::new(name, labels.as_array().iter().map(|&i| crate::Label(i)).collect())?,
+            inner: crate::Axis::new(
+                name,
+                labels.as_array().iter().map(|&i| crate::Label(i)).collect(),
+            )?,
         });
         Ok(())
     }

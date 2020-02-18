@@ -2,12 +2,12 @@
 
 #[macro_use]
 extern crate rocket;
+use itertools::Itertools;
 use rocket::State;
 use rocket_contrib::json::Json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use stoicheia::*;
-use itertools::Itertools;
 
 //
 // Catalog and Quilt metadata
@@ -23,14 +23,14 @@ fn get_quilt_meta(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Js
 }
 
 #[post("/catalog/<name>", format = "json", data = "<axes>")]
-fn create_quilt(catalog: State<Arc<dyn Catalog>>, name: String, axes: Json<Vec<String>>) -> Fallible<()> {
+fn create_quilt(
+    catalog: State<Arc<dyn Catalog>>,
+    name: String,
+    axes: Json<Vec<String>>,
+) -> Fallible<()> {
     Ok(catalog.create_quilt(
         &name,
-        &axes
-            .into_inner()
-            .iter()
-            .map(|s| s.as_ref())
-            .collect_vec()[..]
+        &axes.into_inner().iter().map(|s| s.as_ref()).collect_vec()[..],
     )?)
 }
 
@@ -46,8 +46,7 @@ fn get_patch(
     patch_request: Json<PatchRequest>,
 ) -> Fallible<Json<Patch<f32>>> {
     Ok(Json(
-        catalog
-            .fetch(&quilt_name, patch_request.into_inner())?,
+        catalog.fetch(&quilt_name, patch_request.into_inner())?,
     ))
 }
 
@@ -115,7 +114,7 @@ mod tests {
         //
         // Create and retrieve quilts, axes, and patches
         //
-        let catalog = SQLiteCatalog::connect_in_memory();
+        let catalog = SQLiteCatalog::connect_in_memory().unwrap();
         let client = Client::new(make_rocket(catalog)).expect("valid rocket instance");
 
         {
@@ -123,14 +122,12 @@ mod tests {
             // Create a quilt
             //
             let response = client
-                .post("/catalog")
+                .post("/catalog/sales")
                 .header(ContentType::JSON)
                 .body(
                     r#"
-                    {
-                        "name": "sales",
-                        "axes": ["item", "store", "day"]
-                    }"#,
+                    ["item", "store", "day"]
+                    "#,
                 )
                 .dispatch();
             assert_eq!(response.status(), Status::Ok);

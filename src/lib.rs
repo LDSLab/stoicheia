@@ -21,7 +21,7 @@ mod error;
 pub use error::{Fallible, StoiError};
 
 #[cfg(feature = "python")]
-mod python;
+pub mod python;
 
 /// A user-defined signed integer label for a particular component of an axis
 ///

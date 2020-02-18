@@ -7,8 +7,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use thread_local::CachedThreadLocal;
 
-use crate::{Axis, BoundingBox, Patch, PatchID, Quilt, QuiltMeta, AxisSelection, AxisSegment, PatchRequest, StoiError};
+use crate::{
+    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRequest, Quilt, QuiltMeta,
+    StoiError,
+};
 
+/// A connection to a tensor storage
 pub trait Catalog: Send + Sync {
     /// Get a quilt by name
     fn get_quilt(&self, quilt_name: &str) -> Fallible<Quilt>;
@@ -16,7 +20,7 @@ pub trait Catalog: Send + Sync {
     /// Get only the metadata associated with a quilt by name
     fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta>;
 
-    /// Create a new quilt
+    /// Create a new quilt, and create new axes for it if necessary
     fn create_quilt(&self, quilt_name: &str, axes_names: &[&str]) -> Fallible<()>;
 
     /// List all the quilts in the catalog
@@ -41,6 +45,9 @@ pub trait Catalog: Send + Sync {
     /// Save a single patch by ID
     fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()>;
 
+    /// Create an axis, possibly ignoring it if it exists
+    fn create_axis(&self, name: &str, ignore_if_exists: bool) -> Fallible<()>;
+
     /// Get all the labels of an axis, in the order you would expect them to be stored
     fn get_axis(&self, name: &str) -> Fallible<Axis>;
 
@@ -49,7 +56,7 @@ pub trait Catalog: Send + Sync {
 
     ///
     /// Default implementations
-    /// 
+    ///
 
     /// Resolve the labels that a patch request selects
     fn get_axis_from_selection(&self, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
@@ -177,7 +184,7 @@ pub trait Catalog: Send + Sync {
     }
 }
 
-/// List of available tensors
+/// An implementation of tensor storage on SQLite
 pub struct SQLiteCatalog {
     base: PathBuf,
     conn: CachedThreadLocal<rusqlite::Connection>,
@@ -216,13 +223,14 @@ impl SQLiteCatalog {
                 NO_PARAMS,
             )?;
 
+            // Later see if an r-tree actually changes performance
             conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS patch_rtree(
+                "CREATE TABLE IF NOT EXISTS patch (
                     patch_id INTEGER PRIMARY KEY,
+                    dim_0_min, dim_0_max,
                     dim_1_min, dim_1_max,
                     dim_2_min, dim_2_max,
-                    dim_3_min, dim_3_max,
-                    +quilt_name TEXT NOT NULL COLLATE NOCASE
+                    dim_3_min, dim_3_max
                 );",
                 NO_PARAMS,
             )?;
@@ -280,8 +288,13 @@ impl Catalog for SQLiteCatalog {
         Ok(map)
     }
 
+    /// Create a quilt, and create axes as necessary to make it
     fn create_quilt(&self, quilt_name: &str, axes_names: &[&str]) -> Fallible<()> {
-        self.get_conn()?.execute(
+        let conn = self.get_conn()?;
+        for axis_name in axes_names {
+            self.create_axis(axis_name, true)?;
+        }
+        conn.execute(
             "INSERT INTO quilt(quilt_name, axes) VALUES (?, ?);",
             &[&quilt_name, &serde_json::to_string(axes_names)?.as_ref()],
         )?;
@@ -290,12 +303,12 @@ impl Catalog for SQLiteCatalog {
 
     fn get_patches_by_bounding_box(
         &self,
-        quilt_name: &str,
+        _quilt_name: &str,
         bound: &BoundingBox,
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>> {
         // TODO: Verify that the dimensions match what we see in the quilt
         // The SQL formatting happens here because patch_tree
-        let bound = (0..3)
+        let bound = (0..4)
             .map(|i| bound.0.get(i).cloned().unwrap_or(0..=1 << 30))
             .collect_vec();
 
@@ -305,7 +318,7 @@ impl Catalog for SQLiteCatalog {
             .get_conn()?
             .prepare(
                 "SELECT patch_id
-            FROM patch_rtree
+            FROM patch
             WHERE
                 dim_0_min <= ?
                 AND dim_0_max >= ?
@@ -313,7 +326,8 @@ impl Catalog for SQLiteCatalog {
                 AND dim_1_max >= ?
                 AND dim_2_min <= ?
                 AND dim_2_max >= ?
-                AND quilt_name = ?
+                AND dim_3_min <= ?
+                AND dim_3_max >= ?
             ",
             )?
             .query_map(
@@ -324,7 +338,8 @@ impl Catalog for SQLiteCatalog {
                     &(*bound[1].start() as i64),
                     &(*bound[2].end() as i64),
                     &(*bound[2].start() as i64),
-                    &quilt_name,
+                    &(*bound[3].end() as i64),
+                    &(*bound[3].start() as i64),
                 ],
                 |r| r.get(0),
             )?
@@ -337,7 +352,7 @@ impl Catalog for SQLiteCatalog {
 
     fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
         let res: Vec<u8> = self.get_conn()?.query_row(
-            "SELECT content FROM patch WHERE patch_id = ?",
+            "SELECT content FROM patch_content WHERE patch_id = ?",
             &[&id],
             |r| r.get(0),
         )?;
@@ -345,10 +360,45 @@ impl Catalog for SQLiteCatalog {
     }
 
     fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()> {
-        self.get_conn()?.execute(
-            "INSERT OR REPLACE INTO patch(id, content) VALUES (?,?);",
+        let conn = self.get_conn()?;
+        conn.execute("BEGIN;", NO_PARAMS)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO patch(
+                patch_id,
+                dim_0_min, dim_0_max,
+                dim_1_min, dim_1_max,
+                dim_2_min, dim_2_max,
+                dim_3_min, dim_3_max
+            ) VALUES (?,?,?,?,?,?,?,?,?);",
+            &[
+                &id as &dyn ToSql,
+                // TODO: HACK: Support real bounding boxes
+                &(-1 << 30), &(1 << 30),
+                &(-1 << 30), &(1 << 30),
+                &(-1 << 30), &(1 << 30),
+                &(-1 << 30), &(1 << 30),
+            ],
+        )?;
+        // TODO: If this serialize fails it will deadlock the connection by not rolling back
+        conn.execute(
+            "INSERT OR REPLACE INTO patch_content(patch_id, content) VALUES (?,?);",
             &[&id as &dyn ToSql, &bincode::serialize(&pat)?],
         )?;
+        conn.execute("COMMIT;", NO_PARAMS)?;
+        Ok(())
+    }
+
+    fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
+        self.get_conn()?
+            .execute(
+                &format!(
+                    "INSERT {} INTO axis_content(axis_name, content) VALUES (?,?);",
+                    if ignore_if_exists { "OR IGNORE" } else { "" }
+                ),
+            &[
+                &axis_name as &dyn ToSql,
+                &bincode::serialize(&Axis::empty(axis_name))?,
+            ])?;
         Ok(())
     }
 
@@ -381,7 +431,8 @@ impl Catalog for SQLiteCatalog {
             None => Axis::empty(&new_axis.name),
         };
         existing_axis.union(new_axis);
-
+        
+        // TODO: If this serialize fails it will deadlock the connection by not rolling back
         conn.execute(
             "INSERT OR REPLACE INTO axis_content(axis_name, content) VALUES (?,?);",
             &[
@@ -393,5 +444,27 @@ impl Catalog for SQLiteCatalog {
         conn.execute("COMMIT;", NO_PARAMS)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{AxisSelection, Catalog, Label, SQLiteCatalog};
+
+    #[test]
+    fn test_basic_fetch() {
+        let cat = SQLiteCatalog::connect_in_memory().unwrap();
+        cat.create_quilt("sales", &["itm", "lct", "day"]).unwrap();
+        cat.fetch(
+            "sales",
+            vec![
+                AxisSelection::All { name: "itm".into() },
+                AxisSelection::Labels {
+                    name: "itm".into(),
+                    labels: vec![Label(1)],
+                },
+            ],
+        )
+        .unwrap();
     }
 }
