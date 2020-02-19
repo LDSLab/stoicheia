@@ -61,7 +61,8 @@ You can commit a patch to a catalog using a similar method, but the labels will 
 ```py
 cat.commit(
     quilt = "tot_sal_amt",
-    tag = "latest", # <- Tags have special meaning in stoicheia
+    parent_tag = "latent", # <- Apply the changes to this tag
+    new_tag = "latest",    # <- Name the result (can be the same)
     message = "Elements have been satisfactorily frobnicated",
     patch
 )
@@ -90,7 +91,7 @@ repeatedly then it may make sense to use a quilt to express that tersely:
 # The axis list determines the order you slice and receive patches
 quilt = cat.quilt(
     "tot_sal_amt",
-    tag = "latest",
+    new_tag = "latest",
     axes = ["itm", "lct", "day"]
 )
 patch = quilt[[1,2,3], :, 721:]

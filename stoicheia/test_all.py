@@ -9,4 +9,4 @@ def test_catalog_on_disk():
 def test_create_quilt():
     cat = Catalog()
     cat.create_quilt("sales", ["itm", "lct", "day"])
-    cat.fetch("sales", itm=1, lct=[2,3,4])
+    cat.fetch("sales", "latest", itm=1, lct=[2,3,4])

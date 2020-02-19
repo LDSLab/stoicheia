@@ -7,7 +7,6 @@
 //! cat = Catalog("example.db")
 //! ```
 use crate::error::StoiError;
-use crate::Catalog as CatalogTrait;
 use itertools::Itertools;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
@@ -68,7 +67,7 @@ impl From<crate::StoiError> for PyErr {
 
 #[pyclass]
 pub struct Catalog {
-    inner: Arc<crate::SQLiteCatalog>,
+    inner: crate::Catalog,
 }
 
 #[pymethods]
@@ -80,8 +79,8 @@ impl Catalog {
     #[new]
     pub fn new(obj: &PyRawObject, url: Option<String>) -> PyResult<()> {
         let cat = match url {
-            Some(path) => crate::SQLiteCatalog::connect(path.into())?,
-            None => crate::SQLiteCatalog::connect_in_memory()?,
+            Some(path) => crate::Catalog::connect(&path)?,
+            None => crate::Catalog::connect("")?,
         };
         obj.init(Self { inner: cat });
         Ok(())
@@ -121,6 +120,7 @@ impl Catalog {
     pub fn fetch(
         &self,
         quilt_name: String,
+        tag: String,
         axes: Option<&PyDict>,
     ) -> PyResult<crate::python::Patch> {
         let mut axes_selections = vec![];
@@ -157,7 +157,7 @@ impl Catalog {
         }
 
         Ok(crate::python::Patch {
-            inner: self.inner.fetch(&quilt_name, axes_selections)?,
+            inner: self.inner.fetch(&quilt_name, &tag, axes_selections)?,
         })
     }
 }

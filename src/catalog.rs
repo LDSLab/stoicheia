@@ -1,6 +1,6 @@
 use crate::Fallible;
 use itertools::Itertools;
-use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
+use rusqlite::{ToSql, NO_PARAMS};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::path::PathBuf;
@@ -8,105 +8,102 @@ use std::sync::Arc;
 use thread_local::CachedThreadLocal;
 
 use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRequest, Quilt, QuiltMeta,
-    StoiError,
+    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRequest, Quilt,
+    QuiltDetails, StoiError,
 };
 
-/// A connection to a tensor storage
-pub trait Catalog: Send + Sync {
-    /// Get a quilt by name
-    fn get_quilt(&self, quilt_name: &str) -> Fallible<Quilt>;
-
-    /// Get only the metadata associated with a quilt by name
-    fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta>;
-
-    /// Create a new quilt, and create new axes for it if necessary
-    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str], ignore_if_exists: bool) -> Fallible<()>;
-
-    /// List all the quilts in the catalog
-    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltMeta>>;
-
-    /// List all the patches that intersect a bounding box
+pub struct Catalog {
+    storage: Arc<SQLiteCatalog>,
+}
+impl Catalog {
+    /// Connect to a Stoicheia catalog.
     ///
-    /// There may be false positives; some patches may not actually overlap
-    /// There are no false negatives; all patches that overlap will be returned
-    ///
-    /// This method exists in case the database supports efficient multidimensional range queries
-    /// such as SQLite or Postgres/PostGIS
-    fn get_patches_by_bounding_box(
-        &self,
-        quilt_name: &str,
-        bound: &BoundingBox,
-    ) -> Fallible<Box<dyn Iterator<Item = PatchID>>>;
-
-    /// Get a single patch by ID
-    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>>;
-
-    /// Save a single patch by ID
-    fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()>;
-
-    /// Create an axis, possibly ignoring it if it exists
-    fn create_axis(&self, name: &str, ignore_if_exists: bool) -> Fallible<()>;
-
-    /// Get all the labels of an axis, in the order you would expect them to be stored
-    fn get_axis(&self, name: &str) -> Fallible<Axis>;
-
-    /// Replace the labels of an axis, in the order you would expect them to be stored
-    fn union_axis(&self, axis: &Axis) -> Fallible<()>;
-
-    ///
-    /// Default implementations
-    ///
-
-    /// Resolve the labels that a patch request selects
-    fn get_axis_from_selection(&self, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
-        Ok(match sel {
-            AxisSelection::All { name } => {
-                let axis = self.get_axis(&name)?;
-                let full_range = 0..=axis.len();
-                (axis, vec![full_range])
+    /// If url is "", then an in-memory catalog will be created.
+    /// If url is a file path, then a new SQLite-based catalog will be created.
+    /// Other URLs may be added to support other storage schemes.
+    pub fn connect(url: &str) -> Fallible<Self> {
+        Ok(if url == "" {
+            Catalog {
+                storage: SQLiteCatalog::connect_in_memory()?,
             }
-            AxisSelection::Labels { name, labels } => {
-                // TODO: Profile this - it could be a performance issue
-                let axis: Axis = self.get_axis(&name)?;
-                let labelset = axis.labelset();
-                let start_ix = axis
-                    .labels()
-                    .iter()
-                    .position(|x| labelset.contains(&x))
-                    .unwrap_or(axis.len());
-                let end_ix = axis.labels()[start_ix..]
-                    .iter()
-                    .rposition(|x| labelset.contains(&x))
-                    .unwrap_or(0);
-                (Axis::new(name, labels)?, vec![start_ix..=end_ix])
-            }
-            AxisSelection::RangeInclusive { name, start, end } => {
-                // Axis labels are not guaranteed to be sorted because it may be optimized for storage, not lookup
-                let axis: Axis = self.get_axis(&name)?;
-                let lab = axis.labels();
-                let start_ix = lab
-                    .iter()
-                    .position(|&x| x == start)
-                    // If we can't find that label we don't search anything
-                    .unwrap_or(axis.len());
-                let end_ix = start_ix
-                    + lab[start_ix..]
-                        .iter()
-                        .position(|&x| x == end)
-                        .unwrap_or(axis.len() - start_ix);
-                (
-                    Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
-                    vec![start_ix..=end_ix],
-                )
+        } else {
+            Catalog {
+                storage: SQLiteCatalog::connect(url.into())?,
             }
         })
     }
 
-    /// Assemble a patch from a quilt
+    /// List the quilts available in this Catalog
+    pub fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>> {
+        self.storage.list_quilts()
+    }
+
+    /// Create a quilt, and create axes as necessary to make it.
     ///
-    /// The tensor name is part of the patch so it doesn't need to be specified
-    fn fetch(&self, quilt_name: &str, request: PatchRequest) -> Fallible<Patch<f32>> {
+    /// With `ignore_if_exists=true`, you can make this idempotent rather than fail. In either case
+    /// it will not replace or modify an existing quilt.
+    pub fn create_quilt(
+        &self,
+        quilt_name: &str,
+        axes_names: &[&str],
+        ignore_if_exists: bool,
+    ) -> Fallible<()> {
+        for axis_name in axes_names {
+            self.storage.create_axis(axis_name, true)?;
+        }
+        self.storage
+            .create_quilt(quilt_name, axes_names, ignore_if_exists)?;
+        Ok(())
+    }
+
+    /// Get a quilt by name, as a convenient way to access patches
+    ///
+    /// This doesn't load any of the content into memory, it just provides a convenient
+    /// way to access patches. As a result, this is pretty cheap, but it does incur IO
+    /// to get the quilt's metadata so it is still fallible.
+    pub fn get_quilt(&self, quilt_name: &str, tag: &str) -> Fallible<Quilt> {
+        // This will fail if the quilt doesn't already exist
+        self.storage.get_quilt_details(quilt_name)?;
+        Ok(Quilt::new(quilt_name.into(), tag.into(), self))
+    }
+
+    /// Get details about a quilt by name
+    ///
+    /// What details are available may depend on the quilt, and fields are likely to
+    /// be added with time (so be careful with serializing QuiltDetails)
+    pub fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails> {
+        self.storage.get_quilt_details(quilt_name)
+    }
+
+    /// Create an empty axis
+    pub fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
+        self.storage.create_axis(axis_name, ignore_if_exists)
+    }
+
+    /// Get all the labels of an axis, in the order you would expect them to be stored
+    pub fn get_axis(&self, name: &str) -> Fallible<Axis> {
+        self.storage.get_axis(name)
+    }
+
+    /// Replace the labels of an axis, in the order you would expect them to be stored
+    pub fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
+        // TODO: Race condition, needs a transaction
+        let mut existing_axis = self
+            .get_axis(&new_axis.name)
+            .unwrap_or(Axis::empty(&new_axis.name));
+        existing_axis.union(new_axis);
+        self.storage.put_axis(&existing_axis)?;
+        Ok(())
+    }
+
+    /// Fetch a patch from a quilt.
+    ///
+    /// - You can request any slice, and it will be assembled from the underlying commits.
+    ///   - How many patches it's assembled from depends on the storage order
+    ///     (which is the order the labels are specified in the axis, not in your request)
+    /// - You can request elements you haven't initialized yet, and you'll get zeros.
+    /// - You may only request patches up to 1 GB, as a safety valve
+    pub fn fetch(&self, quilt_name: &str, tag: &str, request: PatchRequest) -> Fallible<Patch<f32>> {
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
                 "Patches must have at least one axis",
@@ -164,7 +161,10 @@ pub trait Catalog: Send + Sync {
         // TODO: This could be async
         let mut patch_ids = HashSet::new();
         for bbox in &bounding_boxes {
-            for patch_id in self.get_patches_by_bounding_box(&quilt_name, bbox)? {
+            for patch_id in self
+                .storage
+                .get_patches_by_bounding_box(&quilt_name, &tag, bbox)?
+            {
                 patch_ids.insert(patch_id);
             }
         }
@@ -176,16 +176,133 @@ pub trait Catalog: Send + Sync {
         // TODO: This should definitely be async or at least concurrent
         let mut target_patch = Patch::from_axes(axes)?;
         for patch_id in patch_ids {
-            let source_patch = self.get_patch(patch_id)?;
+            let source_patch = self.storage.get_patch(patch_id)?;
             target_patch.apply(&source_patch)?;
         }
 
         Ok(target_patch)
     }
+
+    /// Use the actual axis values to resolve a request into specific labels
+    ///
+    /// This is necessary because we need to turn the axis labels into storage indices for range queries
+    fn get_axis_from_selection(&self, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
+        Ok(match sel {
+            AxisSelection::All { name } => {
+                let axis = self.get_axis(&name)?;
+                let full_range = 0..=axis.len();
+                (axis, vec![full_range])
+            }
+            AxisSelection::Labels { name, labels } => {
+                // TODO: Profile this - it could be a performance issue
+                let axis: Axis = self.get_axis(&name)?;
+                let labelset = axis.labelset();
+                let start_ix = axis
+                    .labels()
+                    .iter()
+                    .position(|x| labelset.contains(&x))
+                    .unwrap_or(axis.len());
+                let end_ix = axis.labels()[start_ix..]
+                    .iter()
+                    .rposition(|x| labelset.contains(&x))
+                    .unwrap_or(0);
+                (Axis::new(name, labels)?, vec![start_ix..=end_ix])
+            }
+            AxisSelection::RangeInclusive { name, start, end } => {
+                // Axis labels are not guaranteed to be sorted because it may be optimized for storage, not lookup
+                let axis: Axis = self.get_axis(&name)?;
+                let lab = axis.labels();
+                let start_ix = lab
+                    .iter()
+                    .position(|&x| x == start)
+                    // If we can't find that label we don't search anything
+                    .unwrap_or(axis.len());
+                let end_ix = start_ix
+                    + lab[start_ix..]
+                        .iter()
+                        .position(|&x| x == end)
+                        .unwrap_or(axis.len() - start_ix);
+                (
+                    Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
+                    vec![start_ix..=end_ix],
+                )
+            }
+        })
+    }
+
+    /// Commit a patch to a quilt.
+    pub fn commit(
+        &self,
+        quilt_name: &str,
+        parent_tag: &str,
+        new_tag: &str,
+        message: &str,
+        patches: Vec<Patch<f32>>,
+    ) -> Fallible<i64> {
+        // TODO: actually implement this. It needs to split/balance...
+        self.storage
+            .put_commit(quilt_name, parent_tag, new_tag, message, patches)
+    }
+}
+
+/// A connection to tensor storage
+trait Storage: Send + Sync {
+    /// Get only the metadata associated with a quilt by name
+    fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails>;
+
+    /// Create a new quilt (doesn't create associated axes)
+    fn create_quilt(
+        &self,
+        quilt_name: &str,
+        axes_names: &[&str],
+        ignore_if_exists: bool,
+    ) -> Fallible<()>;
+
+    /// List all the quilts in the catalog
+    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>>;
+
+    /// List all the patches that intersect a bounding box
+    ///
+    /// There may be false positives; some patches may not actually overlap
+    /// There are no false negatives; all patches that overlap will be returned
+    ///
+    /// This method exists in case the database supports efficient multidimensional range queries
+    /// such as SQLite or Postgres/PostGIS
+    fn get_patches_by_bounding_box(
+        &self,
+        quilt_name: &str,
+        tag: &str,
+        bound: &BoundingBox,
+    ) -> Fallible<Box<dyn Iterator<Item = PatchID>>>;
+
+    /// Get a single patch by ID
+    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>>;
+
+    /// Create an axis, possibly ignoring it if it exists
+    fn create_axis(&self, name: &str, ignore_if_exists: bool) -> Fallible<()>;
+
+    /// Get all the labels of an axis, in the order you would expect them to be stored
+    fn get_axis(&self, name: &str) -> Fallible<Axis>;
+
+    /// Overwrite a whole axis. Only do this through `Catalog.union_axis()`.
+    fn put_axis(&self, axis: &Axis) -> Fallible<()>;
+
+    /// Make changes to a tensor via a commit
+    ///
+    /// This is only available together, so that the underlying storage media can do this
+    /// atomically without a complicated API
+    fn put_commit(
+        &self,
+        quilt_name: &str,
+        parent_tag: &str,
+        new_tag: &str,
+        message: &str,
+        patches: Vec<Patch<f32>>,
+    ) -> Fallible<i64>;
 }
 
 /// An implementation of tensor storage on SQLite
-pub struct SQLiteCatalog {
+struct SQLiteCatalog {
     base: PathBuf,
     conn: CachedThreadLocal<rusqlite::Connection>,
 }
@@ -214,58 +331,166 @@ impl SQLiteCatalog {
         self.conn.get_or_try(|| {
             let conn = rusqlite::Connection::open(&self.base)?;
             conn.busy_timeout(std::time::Duration::from_secs(5))?;
-            conn.execute_batch("
-                CREATE TABLE IF NOT EXISTS quilt(
-                    quilt_name TEXT PRIMARY KEY COLLATE NOCASE,
+            conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS Quilt(
+                    quilt_name TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
                     axes TEXT NOT NULL CHECK (json_valid(axes))
                 ) WITHOUT ROWID;
 
                 -- Later see if an r-tree actually changes performance
-                CREATE TABLE IF NOT EXISTS patch (
+                CREATE TABLE IF NOT EXISTS Patch (
                     patch_id INTEGER PRIMARY KEY,
+                    comm_id INTEGER NOT NULL REFERENCES Comm(comm_id),
                     dim_0_min, dim_0_max,
                     dim_1_min, dim_1_max,
                     dim_2_min, dim_2_max,
                     dim_3_min, dim_3_max
                 );
 
-                CREATE TABLE IF NOT EXISTS patch_content(
+                CREATE TABLE IF NOT EXISTS PatchContent(
                     patch_id INTEGER PRIMARY KEY,
                     content BLOB
                 );
 
-                CREATE TABLE IF NOT EXISTS axis_content(
+                CREATE TABLE IF NOT EXISTS AxisContent(
                     axis_name TEXT PRIMARY KEY,
                     content BLOB
                 );
-            ")?;
+
+                CREATE TABLE IF NOT EXISTS Comm(
+                   comm_id INTEGER PRIMARY KEY,
+                   quilt_name TEXT NOT NULL COLLATE NOCASE REFERENCES Quilt(quilt_name),
+                   parent_comm_id INTEGER REFERENCES Comm(comm_id),
+                   message TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS Comm__quilt_name ON Quilt(quilt_name);
+
+                CREATE TABLE IF NOT EXISTS Tag(
+                    tag_name TEXT NOT NULL PRIMARY KEY,
+                    comm_id INTEGER NOT NULL REFERENCES Comm(comm_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS Tag__comm_id ON Tag(comm_id);
+            ",
+            )?;
             Ok(conn)
         })
     }
+
+    /// Put patch is only safe to do inside put_commit, so it's not part of Storage
+    fn put_patch(
+        &self,
+        conn: &rusqlite::Connection,
+        comm_id: i64,
+        pat: Patch<f32>,
+    ) -> Fallible<PatchID> {
+        let id = PatchID(self.gen_id());
+        conn.execute("BEGIN;", NO_PARAMS)?;
+        conn.execute(
+            "INSERT OR REPLACE INTO patch(
+                patch_id,
+                comm_id,
+                dim_0_min, dim_0_max,
+                dim_1_min, dim_1_max,
+                dim_2_min, dim_2_max,
+                dim_3_min, dim_3_max
+            ) VALUES (?,?,?,?,?,?,?,?,?);",
+            &[
+                &id as &dyn ToSql,
+                &comm_id,
+                // TODO: HACK: Support real bounding boxes
+                &(-1 << 30),
+                &(1 << 30),
+                &(-1 << 30),
+                &(1 << 30),
+                &(-1 << 30),
+                &(1 << 30),
+                &(-1 << 30),
+                &(1 << 30),
+            ],
+        )?;
+        // TODO: If this serialize fails it will deadlock the connection by not rolling back
+        conn.execute(
+            "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
+            &[&id as &dyn ToSql, &bincode::serialize(&pat)?],
+        )?;
+        conn.execute("COMMIT;", NO_PARAMS)?;
+        Ok(id)
+    }
+
+    /// Generate an id using the time plus a small salt
+    fn gen_id(&self) -> i64 {
+        chrono::Utc::now().timestamp_nanos() + rand::random::<i16>() as i64
+    }
 }
 
-impl Catalog for SQLiteCatalog {
-    fn get_quilt(&self, quilt_name: &str) -> Fallible<Quilt> {
-        // Make sure it exists
-        self.get_quilt_meta(quilt_name)?;
-        Ok(Quilt::new(quilt_name.into(), self))
+impl Storage for SQLiteCatalog {
+    fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
+        self.get_conn()?.execute(
+            &format!(
+                "INSERT {} INTO AxisContent(axis_name, content) VALUES (?,?);",
+                if ignore_if_exists { "OR IGNORE" } else { "" }
+            ),
+            &[
+                &axis_name as &dyn ToSql,
+                &bincode::serialize(&Axis::empty(axis_name))?,
+            ],
+        )?;
+        Ok(())
     }
+
+    /// Replace a whole axis. Only do this through `Catalog.union_axis()`.
+    fn put_axis(&self, axis: &Axis) -> Fallible<()> {
+        self.get_conn()?.execute(
+            "INSERT OR REPLACE INTO AxisContent(axis_name, content) VALUES (?,?);",
+            &[&axis.name as &dyn ToSql, &bincode::serialize(&axis)?],
+        )?;
+        Ok(())
+    }
+
+    /// Get all the labels of an axis, in the order you would expect them to be stored
+    fn get_axis(&self, name: &str) -> Fallible<Axis> {
+        let res: Vec<u8> = self.get_conn()?.query_row(
+            "SELECT content FROM AxisContent WHERE axis_name = ?",
+            &[&name],
+            |r| r.get(0),
+        )?;
+        Ok(bincode::deserialize(&res[..])?)
+    }
+
+    /// Create a quilt
+    fn create_quilt(
+        &self,
+        quilt_name: &str,
+        axes_names: &[&str],
+        ignore_if_exists: bool,
+    ) -> Fallible<()> {
+        self.get_conn()?.execute(
+            &format!(
+                "INSERT {} INTO quilt(quilt_name, axes) VALUES (?, ?);",
+                if ignore_if_exists { "OR IGNORE" } else { "" }
+            ),
+            &[&quilt_name, &serde_json::to_string(axes_names)?.as_ref()],
+        )?;
+        Ok(())
+    }
+
     /// Get extended information about a quilt
-    fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta> {
+    fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails> {
         Ok(self.get_conn()?.query_row_and_then(
             "SELECT quilt_name, axes FROM quilt WHERE quilt_name = ?",
             &[&quilt_name],
-            |r| QuiltMeta::try_from(r),
+            |r| QuiltDetails::try_from(r),
         )?)
     }
 
     /// List the currently available quilts
-    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltMeta>> {
+    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>> {
         let mut map = HashMap::new();
         for row in self
             .get_conn()?
             .prepare("SELECT quilt_name, axes FROM quilt;")?
-            .query_map(NO_PARAMS, |r| QuiltMeta::try_from(r))?
+            .query_map(NO_PARAMS, |r| QuiltDetails::try_from(r))?
         {
             let row = row?;
             map.insert(row.name.clone(), row);
@@ -273,25 +498,10 @@ impl Catalog for SQLiteCatalog {
         Ok(map)
     }
 
-    /// Create a quilt, and create axes as necessary to make it
-    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str], ignore_if_exists: bool) -> Fallible<()> {
-        let conn = self.get_conn()?;
-        for axis_name in axes_names {
-            self.create_axis(axis_name, true)?;
-        }
-        conn.execute(
-            &format!(
-                "INSERT {} INTO quilt(quilt_name, axes) VALUES (?, ?);",
-                if ignore_if_exists {"OR IGNORE"} else {""}
-            ),
-            &[&quilt_name, &serde_json::to_string(axes_names)?.as_ref()],
-        )?;
-        Ok(())
-    }
-
     fn get_patches_by_bounding_box(
         &self,
-        _quilt_name: &str,
+        quilt_name: &str,
+        tag: &str,
         bound: &BoundingBox,
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>> {
         // TODO: Verify that the dimensions match what we see in the quilt
@@ -306,9 +516,13 @@ impl Catalog for SQLiteCatalog {
             .get_conn()?
             .prepare(
                 "SELECT patch_id
-            FROM patch
+            FROM Patch
+            INNER JOIN Comm USING (comm_id)
+            INNER JOIN Tag USING (comm_id)
             WHERE
-                dim_0_min <= ?
+                quilt_name = ?
+                AND tag_name = ?
+                AND dim_0_min <= ?
                 AND dim_0_max >= ?
                 AND dim_1_min <= ?
                 AND dim_1_max >= ?
@@ -320,6 +534,8 @@ impl Catalog for SQLiteCatalog {
             )?
             .query_map(
                 &[
+                    &quilt_name,
+                    &tag,
                     &(*bound[0].end() as i64) as &dyn ToSql,
                     &(*bound[0].start() as i64),
                     &(*bound[1].end() as i64),
@@ -340,120 +556,79 @@ impl Catalog for SQLiteCatalog {
 
     fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
         let res: Vec<u8> = self.get_conn()?.query_row(
-            "SELECT content FROM patch_content WHERE patch_id = ?",
+            "SELECT content FROM PatchContent WHERE patch_id = ?",
             &[&id],
             |r| r.get(0),
         )?;
         Ok(bincode::deserialize(&res[..])?)
     }
 
-    fn put_patch(&self, id: PatchID, pat: Patch<f32>) -> Fallible<()> {
+    // put_patch is part of Self, not Storage because you can only do it using put_commit()
+
+    fn put_commit(
+        &self,
+        quilt_name: &str,
+        parent_tag: &str,
+        new_tag: &str,
+        message: &str,
+        patches: Vec<Patch<f32>>,
+    ) -> Fallible<i64> {
+        let comm_id: i64 = self.gen_id();
+
         let conn = self.get_conn()?;
-        conn.execute("BEGIN;", NO_PARAMS)?;
+        for pat in patches {
+            self.put_patch(conn, comm_id, pat)?;
+        }
+        // TODO: Race condition
         conn.execute(
-            "INSERT OR REPLACE INTO patch(
-                patch_id,
-                dim_0_min, dim_0_max,
-                dim_1_min, dim_1_max,
-                dim_2_min, dim_2_max,
-                dim_3_min, dim_3_max
-            ) VALUES (?,?,?,?,?,?,?,?,?);",
-            &[
-                &id as &dyn ToSql,
-                // TODO: HACK: Support real bounding boxes
-                &(-1 << 30), &(1 << 30),
-                &(-1 << 30), &(1 << 30),
-                &(-1 << 30), &(1 << 30),
-                &(-1 << 30), &(1 << 30),
-            ],
+            "INSERT OR REPLACE INTO Comm(
+                comm_id,
+                quilt_name,
+                parent_comm_id,
+                message
+            ) SELECT 
+                ?, ?, Parent.comm_id, ?
+            FROM Tag Parent
+            WHERE tag_name = ?;",
+            &[&comm_id as &dyn ToSql, &quilt_name, &message, &parent_tag],
         )?;
-        // TODO: If this serialize fails it will deadlock the connection by not rolling back
         conn.execute(
-            "INSERT OR REPLACE INTO patch_content(patch_id, content) VALUES (?,?);",
-            &[&id as &dyn ToSql, &bincode::serialize(&pat)?],
+            "INSERT OR REPLACE INTO Tag(
+                tag_name,
+                comm_id
+            ) VALUES (?, ?)",
+            &[&new_tag as &dyn ToSql, &comm_id],
         )?;
-        conn.execute("COMMIT;", NO_PARAMS)?;
-        Ok(())
+        Ok(comm_id)
     }
+}
 
-    fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
-        self.get_conn()?
-            .execute(
-                &format!(
-                    "INSERT {} INTO axis_content(axis_name, content) VALUES (?,?);",
-                    if ignore_if_exists { "OR IGNORE" } else { "" }
-                ),
-            &[
-                &axis_name as &dyn ToSql,
-                &bincode::serialize(&Axis::empty(axis_name))?,
-            ])?;
-        Ok(())
-    }
-
-    /// Get all the labels of an axis, in the order you would expect them to be stored
-    fn get_axis(&self, name: &str) -> Fallible<Axis> {
-        let res: Vec<u8> = self.get_conn()?.query_row(
-            "SELECT content FROM axis_content WHERE axis_name = ?",
-            &[&name],
-            |r| r.get(0),
-        )?;
-        Ok(bincode::deserialize(&res[..])?)
-    }
-
-    /// Replace the labels of an axis, in the order you would expect them to be stored
-    fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
-        let conn = self.get_conn()?;
-        // TODO: determine if a race condition here is possible in an async environment
-        // But if we use a transaction it may deadlock - what to do??
-        //conn.execute("BEGIN;", NO_PARAMS)?;
-
-        let res: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT content FROM axis_content WHERE axis_name = ?",
-                &[&new_axis.name],
-                |r| r.get(0),
-            )
-            .optional()?;
-
-        let mut existing_axis = match res {
-            Some(x) => bincode::deserialize::<Axis>(&x[..])?.check_distinct()?,
-            None => Axis::empty(&new_axis.name),
-        };
-        existing_axis.union(new_axis);
-        
-        // TODO: If this serialize fails it will deadlock the connection by not rolling back
-        conn.execute(
-            "INSERT OR REPLACE INTO axis_content(axis_name, content) VALUES (?,?);",
-            &[
-                &new_axis.name as &dyn ToSql,
-                &bincode::serialize(&existing_axis)?,
-            ],
-        )?;
-
-        //conn.execute("COMMIT;", NO_PARAMS)?;
-
-        Ok(())
-    }
+pub struct CommitDetails {
+    comm_id: i64,
+    quilt_name: String,
+    tag: String,
+    message: String,
+    patches: Vec<PatchID>,
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{AxisSelection, Axis, Catalog, Label, SQLiteCatalog, Patch};
-
+    use crate::{Axis, AxisSelection, Catalog, Label, Patch};
 
     #[test]
     fn test_create_axis() {
-        let cat = SQLiteCatalog::connect_in_memory().unwrap();
+        let cat = Catalog::connect("").unwrap();
         cat.create_axis("xjhdsa", false)
             .expect("Should be fine to create one that doesn't exist yet");
         cat.create_axis("xjhdsa", true)
             .expect("Should be fine to try to create an axis that exists");
         cat.create_axis("xjhdsa", false)
             .expect_err("Should fail to create duplicate axis");
-        
+
         cat.get_axis("uyiuyoiuy")
             .expect_err("Should throw an error for an axis that doesn't exist.");
-        let mut ax = cat.get_axis("xjhdsa")
+        let mut ax = cat
+            .get_axis("xjhdsa")
             .expect("Should be able to get an axis I just made");
         assert_eq!(ax.labels(), &[]);
 
@@ -463,18 +638,18 @@ mod tests {
         // Union an axis
         cat.union_axis(&ax)
             .expect("Should be able to union an axis");
-        ax = cat.get_axis("uyiuyoiuy")
+        ax = cat
+            .get_axis("uyiuyoiuy")
             .expect("Axis should exist after union");
         assert_eq!(ax.labels(), &[Label(1), Label(5)]);
 
-        cat.union_axis(&ax)
-            .expect("Union twice is a no-op");
-        ax = cat.get_axis("uyiuyoiuy")
+        cat.union_axis(&ax).expect("Union twice is a no-op");
+        ax = cat
+            .get_axis("uyiuyoiuy")
             .expect("Axis should still exist after second union");
         assert_eq!(ax.labels(), &[Label(1), Label(5)]);
 
-        cat.union_axis(&Axis::new("uyiuyoiuy", vec![Label(0), Label(5)])
-        .unwrap())
+        cat.union_axis(&Axis::new("uyiuyoiuy", vec![Label(0), Label(5)]).unwrap())
             .expect("Union should append");
         ax = cat.get_axis("uyiuyoiuy").unwrap();
         assert_eq!(ax.labels(), &[Label(1), Label(5), Label(0)]);
@@ -482,34 +657,35 @@ mod tests {
 
     #[test]
     fn test_create_quilt() {
-        let cat = SQLiteCatalog::connect_in_memory().unwrap();
+        let cat = Catalog::connect("").unwrap();
         // This should automatically create the axes as well, so it doesn't complain
-        cat.create_quilt("sales", &["itm", "lct", "day"], true).unwrap();
+        cat.create_quilt("sales", &["itm", "lct", "day"], true)
+            .unwrap();
     }
 
     #[test]
     fn test_basic_fetch() {
-        let cat = SQLiteCatalog::connect_in_memory().unwrap();
-        cat.create_quilt("sales", &["itm", "lct", "day"], true).unwrap();
+        let cat = Catalog::connect("").unwrap();
+        cat.create_quilt("sales", &["itm", "lct", "day"], true)
+            .unwrap();
 
         // This should assume the axes' labels exist if you specify them, but not if you don't
-        let mut pat = cat.fetch(
-            "sales",
-            vec![
-                AxisSelection::All { name: "itm".into() },
-                AxisSelection::Labels {
-                    name: "itm".into(),
-                    labels: vec![Label(1)],
-                },
-            ],
-        )
-        .unwrap();
+        let mut pat = cat
+            .fetch(
+                "sales",
+                "latest",
+                vec![
+                    AxisSelection::All { name: "itm".into() },
+                    AxisSelection::Labels {
+                        name: "itm".into(),
+                        labels: vec![Label(1)],
+                    },
+                ],
+            )
+            .unwrap();
         assert_eq!(pat.content().shape(), &[0, 1]);
 
-        pat = Patch::from_axes(vec![
-            Axis::range("itm", 9..12),
-            Axis::range("xyz", 2..4),
-        ]).unwrap();
+        pat = Patch::from_axes(vec![Axis::range("itm", 9..12), Axis::range("xyz", 2..4)]).unwrap();
 
         pat.content_mut().fill(1.0);
     }

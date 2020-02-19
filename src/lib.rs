@@ -9,10 +9,10 @@ mod patch;
 pub use patch::Patch;
 
 mod quilt;
-pub use quilt::{Quilt, QuiltMeta};
+pub use quilt::{Quilt, QuiltDetails};
 
 mod catalog;
-pub use catalog::{Catalog, SQLiteCatalog};
+pub use catalog::Catalog;
 
 mod axis;
 pub use axis::Axis;

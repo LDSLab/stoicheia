@@ -5,6 +5,7 @@ extern crate rocket;
 use itertools::Itertools;
 use rocket::State;
 use rocket_contrib::json::Json;
+use serde_derive::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use stoicheia::*;
@@ -13,18 +14,18 @@ use stoicheia::*;
 // Catalog and Quilt metadata
 //
 #[get("/catalog")]
-fn list_catalog(catalog: State<Arc<dyn Catalog>>) -> Fallible<Json<HashMap<String, QuiltMeta>>> {
+fn list_catalog(catalog: State<Arc<Catalog>>) -> Fallible<Json<HashMap<String, QuiltDetails>>> {
     Ok(Json(catalog.list_quilts()?))
 }
 
 #[get("/quilt/<name>")]
-fn get_quilt_meta(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Json<QuiltMeta>> {
-    Ok(Json(catalog.get_quilt_meta(&name)?))
+fn get_quilt_meta(catalog: State<Arc<Catalog>>, name: String) -> Fallible<Json<QuiltDetails>> {
+    Ok(Json(catalog.get_quilt_details(&name)?))
 }
 
 #[post("/catalog/<name>", format = "json", data = "<axes>")]
 fn create_quilt(
-    catalog: State<Arc<dyn Catalog>>,
+    catalog: State<Arc<Catalog>>,
     name: String,
     axes: Json<Vec<String>>,
 ) -> Fallible<()> {
@@ -40,30 +41,44 @@ fn create_quilt(
 //
 
 /// Get a slice out of a quilt
-#[post("/quilt/slice/<quilt_name>", format = "json", data = "<patch_request>")]
+#[post("/quilt/slice/<quilt_name>/<tag>", format = "json", data = "<patch_request>")]
 fn get_patch(
-    catalog: State<Arc<dyn Catalog>>,
+    catalog: State<Arc<Catalog>>,
     quilt_name: String,
+    tag: String,
     patch_request: Json<PatchRequest>,
 ) -> Fallible<Json<Patch<f32>>> {
     Ok(Json(
-        catalog.fetch(&quilt_name, patch_request.into_inner())?,
+        catalog.fetch(&quilt_name, &tag, patch_request.into_inner())?,
     ))
 }
 
-/// Apply a patch to a quilt
-#[patch("/quilt/slice/<quilt_name>", format = "json", data = "<pat>")]
-fn apply_patch(
-    catalog: State<Arc<dyn Catalog>>,
+#[derive(Serialize, Deserialize)]
+struct WebCommit {
     quilt_name: String,
-    pat: Json<Patch<f32>>,
-) -> Fallible<()> {
-    Ok(catalog.get_quilt(&quilt_name)?.apply(pat.into_inner())?)
+    parent_tag: String,
+    new_tag: String,
+    message: String,
+    patches: Vec<Patch<f32>>,
+}
+
+/// Apply a patch to a quilt
+#[patch("/quilt/commit", format = "json", data = "<commit>")]
+fn apply_patch(catalog: State<Arc<Catalog>>, commit: Json<WebCommit>) -> Fallible<Json<i64>> {
+    let commit = commit.into_inner();
+    let comm_id = catalog.commit(
+        &commit.quilt_name,
+        &commit.parent_tag,
+        &commit.new_tag,
+        &commit.message,
+        commit.patches,
+    )?;
+    Ok(Json(comm_id))
 }
 
 /// Get a copy of a whole axis.
 #[get("/axis/<name>")]
-fn get_axis(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Json<Axis>> {
+fn get_axis(catalog: State<Arc<Catalog>>, name: String) -> Fallible<Json<Axis>> {
     Ok(Json(catalog.get_axis(&name)?))
 }
 
@@ -72,7 +87,7 @@ fn get_axis(catalog: State<Arc<dyn Catalog>>, name: String) -> Fallible<Json<Axi
 /// This is a relatively cheap operation and doesn't require patches to be rebuilt.
 #[patch("/axis/<name>", format = "json", data = "<labels>")]
 fn append_axis(
-    catalog: State<Arc<dyn Catalog>>,
+    catalog: State<Arc<Catalog>>,
     name: String,
     labels: Json<Vec<Label>>,
 ) -> Fallible<()> {
@@ -80,7 +95,7 @@ fn append_axis(
 }
 
 /// Create the rocket server separate from launching it, so we can test it
-fn make_rocket(cat: Arc<dyn Catalog>) -> rocket::Rocket {
+fn make_rocket(cat: Arc<Catalog>) -> rocket::Rocket {
     rocket::ignite()
         .mount(
             "/",
@@ -98,7 +113,7 @@ fn make_rocket(cat: Arc<dyn Catalog>) -> rocket::Rocket {
 }
 
 fn main() {
-    let catalog = SQLiteCatalog::connect("./stoicheia-storage.db".into()).unwrap();
+    let catalog = Arc::new(Catalog::connect("./stoicheia-storage.db").unwrap());
     make_rocket(catalog).launch();
 }
 
@@ -108,6 +123,7 @@ mod tests {
     use rocket::http::ContentType;
     use rocket::http::Status;
     use rocket::local::Client;
+    use std::sync::Arc;
     use stoicheia::*;
 
     #[test]
@@ -115,7 +131,7 @@ mod tests {
         //
         // Create and retrieve quilts, axes, and patches
         //
-        let catalog = SQLiteCatalog::connect_in_memory().unwrap();
+        let catalog = Arc::new(Catalog::connect("").unwrap());
         let client = Client::new(make_rocket(catalog)).expect("valid rocket instance");
 
         {
@@ -138,7 +154,7 @@ mod tests {
             //
             // Retrieve a quilt
             //
-            let mut response = client.get("/quilt/sales").dispatch();
+            let mut response = client.get("/quilt/sales/latest").dispatch();
             assert_eq!(response.status(), Status::Ok);
             assert_eq!(
                 response.body_string(),
@@ -190,37 +206,43 @@ mod tests {
             // Store axis is not increasing but it does match the axis
             let patch_text = r#"
             {
-                "axes": [
-                    {
-                        "name": "item",
-                        "labels": [-4, 10]
-                    },
-                    {
-                        "name": "store",
-                        "labels": [0, -12, 3]
-                    },
-                    {
-                        "name": "day",
-                        "labels": [10, 11, 12, 14]
-                    }
-                ],
-                "dense": {
-                    "v": 1,
-                    "dim": [2, 3, 4],
-                    "data": [
-                        0.01, 0.02, 0.03, 0.04,
-                        0.05, 0.06, 0.07, 0.08,
-                        0.09, 0.10, 0.11, 0.12,
+                "quilt_name": "sales",
+                "parent_tag": "latest",
+                "new_tag": "latest,
+                "message": "uh huh",
+                "patches":[{
+                    "axes": [
+                        {
+                            "name": "item",
+                            "labels": [-4, 10]
+                        },
+                        {
+                            "name": "store",
+                            "labels": [0, -12, 3]
+                        },
+                        {
+                            "name": "day",
+                            "labels": [10, 11, 12, 14]
+                        }
+                    ],
+                    "dense": {
+                        "v": 1,
+                        "dim": [2, 3, 4],
+                        "data": [
+                            0.01, 0.02, 0.03, 0.04,
+                            0.05, 0.06, 0.07, 0.08,
+                            0.09, 0.10, 0.11, 0.12,
 
-                        0.01, 0.02, 0.03, 0.04,
-                        0.05, 0.06, 0.07, 0.08,
-                        0.09, 0.10, 0.11, 0.12
-                    ]
-                }   
+                            0.01, 0.02, 0.03, 0.04,
+                            0.05, 0.06, 0.07, 0.08,
+                            0.09, 0.10, 0.11, 0.12
+                        ]
+                    }   
+                }]
             }"#;
 
             let response = client
-                .patch("/quilt/slice/sales")
+                .patch("/quilt/commit")
                 .header(ContentType::JSON)
                 .body(patch_text)
                 .dispatch();
