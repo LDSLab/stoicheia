@@ -21,7 +21,7 @@ pub trait Catalog: Send + Sync {
     fn get_quilt_meta(&self, quilt_name: &str) -> Fallible<QuiltMeta>;
 
     /// Create a new quilt, and create new axes for it if necessary
-    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str]) -> Fallible<()>;
+    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str], ignore_if_exists: bool) -> Fallible<()>;
 
     /// List all the quilts in the catalog
     fn list_quilts(&self) -> Fallible<HashMap<String, QuiltMeta>>;
@@ -213,47 +213,32 @@ impl SQLiteCatalog {
     fn get_conn(&self) -> Fallible<&rusqlite::Connection> {
         self.conn.get_or_try(|| {
             let conn = rusqlite::Connection::open(&self.base)?;
-            conn.execute(
-                "
+            conn.busy_timeout(std::time::Duration::from_secs(5))?;
+            conn.execute_batch("
                 CREATE TABLE IF NOT EXISTS quilt(
                     quilt_name TEXT PRIMARY KEY COLLATE NOCASE,
                     axes TEXT NOT NULL CHECK (json_valid(axes))
                 ) WITHOUT ROWID;
-            ",
-                NO_PARAMS,
-            )?;
 
-            // Later see if an r-tree actually changes performance
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS patch (
+                -- Later see if an r-tree actually changes performance
+                CREATE TABLE IF NOT EXISTS patch (
                     patch_id INTEGER PRIMARY KEY,
                     dim_0_min, dim_0_max,
                     dim_1_min, dim_1_max,
                     dim_2_min, dim_2_max,
                     dim_3_min, dim_3_max
-                );",
-                NO_PARAMS,
-            )?;
+                );
 
-            conn.execute(
-                "
                 CREATE TABLE IF NOT EXISTS patch_content(
                     patch_id INTEGER PRIMARY KEY,
                     content BLOB
                 );
-            ",
-                NO_PARAMS,
-            )?;
 
-            conn.execute(
-                "
                 CREATE TABLE IF NOT EXISTS axis_content(
                     axis_name TEXT PRIMARY KEY,
                     content BLOB
                 );
-            ",
-                NO_PARAMS,
-            )?;
+            ")?;
             Ok(conn)
         })
     }
@@ -289,13 +274,16 @@ impl Catalog for SQLiteCatalog {
     }
 
     /// Create a quilt, and create axes as necessary to make it
-    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str]) -> Fallible<()> {
+    fn create_quilt(&self, quilt_name: &str, axes_names: &[&str], ignore_if_exists: bool) -> Fallible<()> {
         let conn = self.get_conn()?;
         for axis_name in axes_names {
             self.create_axis(axis_name, true)?;
         }
         conn.execute(
-            "INSERT INTO quilt(quilt_name, axes) VALUES (?, ?);",
+            &format!(
+                "INSERT {} INTO quilt(quilt_name, axes) VALUES (?, ?);",
+                if ignore_if_exists {"OR IGNORE"} else {""}
+            ),
             &[&quilt_name, &serde_json::to_string(axes_names)?.as_ref()],
         )?;
         Ok(())
@@ -416,7 +404,8 @@ impl Catalog for SQLiteCatalog {
     fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
         let conn = self.get_conn()?;
         // TODO: determine if a race condition here is possible in an async environment
-        conn.execute("BEGIN;", NO_PARAMS)?;
+        // But if we use a transaction it may deadlock - what to do??
+        //conn.execute("BEGIN;", NO_PARAMS)?;
 
         let res: Option<Vec<u8>> = conn
             .query_row(
@@ -441,7 +430,7 @@ impl Catalog for SQLiteCatalog {
             ],
         )?;
 
-        conn.execute("COMMIT;", NO_PARAMS)?;
+        //conn.execute("COMMIT;", NO_PARAMS)?;
 
         Ok(())
     }
@@ -449,13 +438,62 @@ impl Catalog for SQLiteCatalog {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AxisSelection, Catalog, Label, SQLiteCatalog};
+    use crate::{AxisSelection, Axis, Catalog, Label, SQLiteCatalog, Patch};
+
+
+    #[test]
+    fn test_create_axis() {
+        let cat = SQLiteCatalog::connect_in_memory().unwrap();
+        cat.create_axis("xjhdsa", false)
+            .expect("Should be fine to create one that doesn't exist yet");
+        cat.create_axis("xjhdsa", true)
+            .expect("Should be fine to try to create an axis that exists");
+        cat.create_axis("xjhdsa", false)
+            .expect_err("Should fail to create duplicate axis");
+        
+        cat.get_axis("uyiuyoiuy")
+            .expect_err("Should throw an error for an axis that doesn't exist.");
+        let mut ax = cat.get_axis("xjhdsa")
+            .expect("Should be able to get an axis I just made");
+        assert_eq!(ax.labels(), &[]);
+
+        ax = Axis::new("uyiuyoiuy", vec![Label(1), Label(5)])
+            .expect("Should be able to create an axis");
+
+        // Union an axis
+        cat.union_axis(&ax)
+            .expect("Should be able to union an axis");
+        ax = cat.get_axis("uyiuyoiuy")
+            .expect("Axis should exist after union");
+        assert_eq!(ax.labels(), &[Label(1), Label(5)]);
+
+        cat.union_axis(&ax)
+            .expect("Union twice is a no-op");
+        ax = cat.get_axis("uyiuyoiuy")
+            .expect("Axis should still exist after second union");
+        assert_eq!(ax.labels(), &[Label(1), Label(5)]);
+
+        cat.union_axis(&Axis::new("uyiuyoiuy", vec![Label(0), Label(5)])
+        .unwrap())
+            .expect("Union should append");
+        ax = cat.get_axis("uyiuyoiuy").unwrap();
+        assert_eq!(ax.labels(), &[Label(1), Label(5), Label(0)]);
+    }
+
+    #[test]
+    fn test_create_quilt() {
+        let cat = SQLiteCatalog::connect_in_memory().unwrap();
+        // This should automatically create the axes as well, so it doesn't complain
+        cat.create_quilt("sales", &["itm", "lct", "day"], true).unwrap();
+    }
 
     #[test]
     fn test_basic_fetch() {
         let cat = SQLiteCatalog::connect_in_memory().unwrap();
-        cat.create_quilt("sales", &["itm", "lct", "day"]).unwrap();
-        cat.fetch(
+        cat.create_quilt("sales", &["itm", "lct", "day"], true).unwrap();
+
+        // This should assume the axes' labels exist if you specify them, but not if you don't
+        let mut pat = cat.fetch(
             "sales",
             vec![
                 AxisSelection::All { name: "itm".into() },
@@ -466,5 +504,13 @@ mod tests {
             ],
         )
         .unwrap();
+        assert_eq!(pat.content().shape(), &[0, 1]);
+
+        pat = Patch::from_axes(vec![
+            Axis::range("itm", 9..12),
+            Axis::range("xyz", 2..4),
+        ]).unwrap();
+
+        pat.content_mut().fill(1.0);
     }
 }

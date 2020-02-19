@@ -92,6 +92,7 @@ impl Catalog {
         self.inner.create_quilt(
             &quilt_name,
             &axes.iter().map(|s| s.as_ref()).collect_vec()[..],
+            true,
         )?;
         Ok(())
     }

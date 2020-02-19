@@ -31,6 +31,7 @@ fn create_quilt(
     Ok(catalog.create_quilt(
         &name,
         &axes.into_inner().iter().map(|s| s.as_ref()).collect_vec()[..],
+        true,
     )?)
 }
 
