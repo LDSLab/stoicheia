@@ -45,7 +45,7 @@ impl Patch {
                 .axes()
                 .iter()
                 .map(|a| {
-                    PyArray1::from_slice(py, &a.labels().iter().map(|l| l.0).collect::<Vec<_>>())
+                    PyArray1::from_slice(py, a.labels())
                 })
                 .collect(),
             self.inner.to_dense().into_pyarray(py).to_owned(),

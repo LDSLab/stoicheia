@@ -267,7 +267,7 @@ mod test {
 
     #[test]
     fn patch_1d_apply() {
-        let item_axis = Axis::new("item", vec![Label(1), Label(3)]).unwrap();
+        let item_axis = Axis::new("item", vec![1, 3]).unwrap();
 
         // Set both elements
         let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
@@ -281,7 +281,7 @@ mod test {
         // Set one but miss the other
         let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(1), Label(2)]).unwrap()],
+            vec![Axis::new("item", vec![1, 2]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -293,7 +293,7 @@ mod test {
         // Miss both
         let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(10), Label(30)]).unwrap()],
+            vec![Axis::new("item", vec![10, 30]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -305,9 +305,9 @@ mod test {
 
         // Unsorted labels
         let mut base =
-            Patch::from_axes(vec![Axis::new("item", vec![Label(30), Label(10)]).unwrap()]).unwrap();
+            Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(30), Label(10)]).unwrap()],
+            vec![Axis::new("item", vec![30, 10]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -319,9 +319,9 @@ mod test {
 
         // Unsorted, mismatched labels
         let mut base =
-            Patch::from_axes(vec![Axis::new("item", vec![Label(30), Label(10)]).unwrap()]).unwrap();
+            Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![Label(10), Label(30)]).unwrap()],
+            vec![Axis::new("item", vec![10, 30]).unwrap()],
             nd::arr1(&[300., 100.]).into_dyn(),
         )
         .unwrap();
@@ -334,8 +334,8 @@ mod test {
 
     #[test]
     fn patch_2d_apply() {
-        let item_axis = Axis::new("item", vec![Label(1), Label(3)]).unwrap();
-        let store_axis = Axis::new("store", vec![Label(-1), Label(-3)]).unwrap();
+        let item_axis = Axis::new("item", vec![1, 3]).unwrap();
+        let store_axis = Axis::new("store", vec![-1, -3]).unwrap();
 
         // Set along both axes
         let mut base = Patch::from_axes(vec![item_axis.clone(), store_axis.clone()]).unwrap();

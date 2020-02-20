@@ -37,10 +37,18 @@ impl<'t> Quilt<'t> {
         Self { name, tag, catalog }
     }
 
+    /// Get details about this quilt (convenience)
     pub fn details(&self) -> Fallible<QuiltDetails> {
         self.catalog.get_quilt_details(&self.name)
     }
 
+    /// Commit a change to a quilt (convenience)
+    /// 
+    /// This method is a convenience function to call Catalog.commit(), but:
+    /// 
+    /// - `quilt_name` is this quilt
+    /// - `parent_tag` is this tag
+    /// - `new_tag` defaults to this tag (which means overwrite it)
     pub fn commit(
         &self,
         new_tag: Option<&str>,
@@ -49,8 +57,8 @@ impl<'t> Quilt<'t> {
     ) -> Fallible<i64> {
         self.catalog.commit(
             &self.name,
-            &self.tag,
-            new_tag.unwrap_or(&self.tag),
+            Some(&self.tag),
+            Some(new_tag.unwrap_or(&self.tag)),
             message,
             patches,
         )

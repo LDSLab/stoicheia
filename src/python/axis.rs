@@ -1,5 +1,4 @@
-use ndarray::prelude::*;
-use numpy::{IntoPyArray, PyArrayDyn};
+use numpy::{IntoPyArray, PyArrayDyn, PyArray1};
 use pyo3::prelude::*;
 
 /// A sequence of distinct signed integer labels uniquely mapping to indices of an axis
@@ -13,28 +12,25 @@ pub struct Axis {
 }
 #[pymethods]
 impl Axis {
-    /// Create a new named axis with a set of labels
+    /// Create a new named axis from a copy of a sequence of integer labels
+    /// 
+    /// Keep in mind that order matters:
+    ///  - with a Patch, it specifies the order of elements in that patch
+    ///  - in a Catalog, it specifies the order of storage (and the most efficient retrieval order)
     #[new]
     pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) -> PyResult<()> {
         obj.init(Self {
             inner: crate::Axis::new(
                 name,
-                labels.as_array().iter().map(|&i| crate::Label(i)).collect(),
+                labels.as_array().iter().copied().collect(),
             )?,
         });
         Ok(())
     }
 
     /// Get a copy of the integer labels associated with each element of this axis
-    pub fn labels(&self, py: Python) -> Py<PyArrayDyn<i64>> {
-        self.inner
-            .labels()
-            .iter()
-            .map(|label| label.0)
-            .collect::<Array1<i64>>()
-            .into_dyn()
-            .into_pyarray(py)
-            .to_owned()
+    pub fn labels<'py>(&self, py: Python<'py>) -> &'py PyArray1<i64> {
+        Vec::from(self.inner.labels()).into_pyarray(py)
     }
 
     /// Merge the labels of two axes, removing duplicates and appending new elements

@@ -28,20 +28,8 @@ pub mod python;
 /// Labels of an axis may not be consecutive, and they define both the storage and retrieval order.
 /// This is important because we trust the user knows what items will be used together, and without
 /// this, patches may cluster meaningless groups of points.
-#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
-pub struct Label(pub i64);
-impl rusqlite::ToSql for Label {
-    fn to_sql(&self) -> Result<sql::types::ToSqlOutput<'_>, sql::Error> {
-        Ok(sql::types::ToSqlOutput::Owned(sql::types::Value::Integer(
-            self.0,
-        )))
-    }
-}
-impl rusqlite::types::FromSql for Label {
-    fn column_result(x: sql::types::ValueRef<'_>) -> Result<Self, sql::types::FromSqlError> {
-        Ok(Label(i64::column_result(x)?))
-    }
-}
+pub type Label = i64;
+
 
 /// The database ID of a patch.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]

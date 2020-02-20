@@ -234,14 +234,20 @@ impl Catalog {
     pub fn commit(
         &self,
         quilt_name: &str,
-        parent_tag: &str,
-        new_tag: &str,
+        parent_tag: Option<&str>,
+        new_tag: Option<&str>,
         message: &str,
         patches: Vec<Patch<f32>>,
     ) -> Fallible<i64> {
         // TODO: actually implement this. It needs to split/balance...
         self.storage
-            .put_commit(quilt_name, parent_tag, new_tag, message, patches)
+            .put_commit(
+                quilt_name,
+                parent_tag.unwrap_or("latest"),
+                new_tag.unwrap_or("latest"),
+                message,
+                patches
+            )
     }
 }
 
@@ -304,23 +310,27 @@ trait Storage: Send + Sync {
 /// An implementation of tensor storage on SQLite
 struct SQLiteCatalog {
     base: PathBuf,
-    conn: CachedThreadLocal<rusqlite::Connection>,
+    conn: CachedThreadLocal<rusqlite::Connection>
 }
 impl SQLiteCatalog {
     /// Create a shared in-memory SQLite database
     pub fn connect_in_memory() -> Fallible<Arc<Self>> {
-        Ok(Arc::new(Self {
+        let slf = Self {
             base: "file::memory:?cache=shared".into(),
             conn: CachedThreadLocal::new(),
-        }))
+        };
+        slf.get_conn()?.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
+        Ok(Arc::new(slf))
     }
 
     /// Connect to the underlying SQLite database
     pub fn connect(base: PathBuf) -> Fallible<Arc<Self>> {
-        Ok(Arc::new(Self {
+        let slf = Self {
             base,
             conn: CachedThreadLocal::new(),
-        }))
+        };
+        slf.get_conn()?.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
+        Ok(Arc::new(slf))
     }
 
     /// Gets the thread-local SQLite connection
@@ -331,48 +341,6 @@ impl SQLiteCatalog {
         self.conn.get_or_try(|| {
             let conn = rusqlite::Connection::open(&self.base)?;
             conn.busy_timeout(std::time::Duration::from_secs(5))?;
-            conn.execute_batch(
-                "
-                CREATE TABLE IF NOT EXISTS Quilt(
-                    quilt_name TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
-                    axes TEXT NOT NULL CHECK (json_valid(axes))
-                ) WITHOUT ROWID;
-
-                -- Later see if an r-tree actually changes performance
-                CREATE TABLE IF NOT EXISTS Patch (
-                    patch_id INTEGER PRIMARY KEY,
-                    comm_id INTEGER NOT NULL REFERENCES Comm(comm_id),
-                    dim_0_min, dim_0_max,
-                    dim_1_min, dim_1_max,
-                    dim_2_min, dim_2_max,
-                    dim_3_min, dim_3_max
-                );
-
-                CREATE TABLE IF NOT EXISTS PatchContent(
-                    patch_id INTEGER PRIMARY KEY,
-                    content BLOB
-                );
-
-                CREATE TABLE IF NOT EXISTS AxisContent(
-                    axis_name TEXT PRIMARY KEY,
-                    content BLOB
-                );
-
-                CREATE TABLE IF NOT EXISTS Comm(
-                   comm_id INTEGER PRIMARY KEY,
-                   quilt_name TEXT NOT NULL COLLATE NOCASE REFERENCES Quilt(quilt_name),
-                   parent_comm_id INTEGER REFERENCES Comm(comm_id),
-                   message TEXT
-                );
-                CREATE UNIQUE INDEX IF NOT EXISTS Comm__quilt_name ON Quilt(quilt_name);
-
-                CREATE TABLE IF NOT EXISTS Tag(
-                    tag_name TEXT NOT NULL PRIMARY KEY,
-                    comm_id INTEGER NOT NULL REFERENCES Comm(comm_id)
-                ) WITHOUT ROWID;
-                CREATE INDEX IF NOT EXISTS Tag__comm_id ON Tag(comm_id);
-            ",
-            )?;
             Ok(conn)
         })
     }
@@ -581,23 +549,23 @@ impl Storage for SQLiteCatalog {
         }
         // TODO: Race condition
         conn.execute(
-            "INSERT OR REPLACE INTO Comm(
+            "INSERT INTO Comm(
                 comm_id,
-                quilt_name,
                 parent_comm_id,
                 message
             ) SELECT 
-                ?, ?, Parent.comm_id, ?
+                ?, Parent.comm_id, ?
             FROM Tag Parent
             WHERE tag_name = ?;",
-            &[&comm_id as &dyn ToSql, &quilt_name, &message, &parent_tag],
+            &[&comm_id as &dyn ToSql, &message, &parent_tag],
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO Tag(
+                quilt_name,
                 tag_name,
                 comm_id
-            ) VALUES (?, ?)",
-            &[&new_tag as &dyn ToSql, &comm_id],
+            ) VALUES (?, ?, ?)",
+            &[&quilt_name as &dyn ToSql, &new_tag, &comm_id],
         )?;
         Ok(comm_id)
     }
@@ -630,9 +598,9 @@ mod tests {
         let mut ax = cat
             .get_axis("xjhdsa")
             .expect("Should be able to get an axis I just made");
-        assert_eq!(ax.labels(), &[]);
+        assert!(ax.labels() == &[] as &[Label]);
 
-        ax = Axis::new("uyiuyoiuy", vec![Label(1), Label(5)])
+        ax = Axis::new("uyiuyoiuy", vec![1, 5])
             .expect("Should be able to create an axis");
 
         // Union an axis
@@ -641,18 +609,18 @@ mod tests {
         ax = cat
             .get_axis("uyiuyoiuy")
             .expect("Axis should exist after union");
-        assert_eq!(ax.labels(), &[Label(1), Label(5)]);
+        assert_eq!(ax.labels(), &[1, 5]);
 
         cat.union_axis(&ax).expect("Union twice is a no-op");
         ax = cat
             .get_axis("uyiuyoiuy")
             .expect("Axis should still exist after second union");
-        assert_eq!(ax.labels(), &[Label(1), Label(5)]);
+        assert_eq!(ax.labels(), &[1, 5]);
 
-        cat.union_axis(&Axis::new("uyiuyoiuy", vec![Label(0), Label(5)]).unwrap())
+        cat.union_axis(&Axis::new("uyiuyoiuy", vec![0, 5]).unwrap())
             .expect("Union should append");
         ax = cat.get_axis("uyiuyoiuy").unwrap();
-        assert_eq!(ax.labels(), &[Label(1), Label(5), Label(0)]);
+        assert_eq!(ax.labels(), &[1, 5, 0]);
     }
 
     #[test]
@@ -678,7 +646,7 @@ mod tests {
                     AxisSelection::All { name: "itm".into() },
                     AxisSelection::Labels {
                         name: "itm".into(),
-                        labels: vec![Label(1)],
+                        labels: vec![1],
                     },
                 ],
             )

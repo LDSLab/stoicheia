@@ -41,7 +41,7 @@ impl Axis {
     pub fn range<T: ToString>(name: T, range: std::ops::Range<i64>) -> Axis {
         Axis {
             name: name.to_string(),
-            labels: range.into_iter().map(|x| Label(x)).collect(),
+            labels: range.into_iter().collect(),
         }
     }
 

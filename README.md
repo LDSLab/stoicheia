@@ -7,7 +7,9 @@ In most cases you will probably find yourself interacting with the stoicheia API
 Catalogs are a connection to the datastore for this collection of tensors. By default, this creates an SQLite based catalog if one doesn't already exist, because they are very convenient work with for small installations.
 ```py
     from stoicheia import Catalog, Patch, Quilt, Axis
-    cat = Catalog("example.db")
+    disk_db = Catalog("example.db") # Connect and create a new database if necessary
+    mem_db  = Catalog("") # Use an in-memory database
+    mem_db2 = Catalog("") # References the same database as mem_db (not a new one)
 ```
 
 ## Patches: labeled slices of tensors
@@ -21,39 +23,40 @@ patch = cat.fetch(
     # You can select by axis labels (not by storage order!)
     itm = [1,2,3],
 
-    # slice() or None both will get the whole axis.
-    lct = slice(),
+    # Omitting an axis or giving None will get the whole axis.
+    lct = None,
 
     # Giving just one label will not remove that axis
     # (because that makes merging patches easier)
     day = 721,
 )
-```
-
-Leaving out any dimensions means to get the whole dimension,
-so this reads the whole tensor:
-```py
+# Or you can get the whole tensor.
+# There are memory guardrails so this may fail if you request something huge.
 patch = cat.fetch("tot_sal_amt")
 ```
 
 ## Slicing contiguous patches
-You can also specify contiguous slices of an axis, but **these are subtle.**
+You can also specify contiguous slices of an axis, by giving the first and last elements.
 
-> **Axes have a defined order, but it might not be sorted.**
 ```py
 patch = cat.fetch(
     "tot_sal_amt",
     "latest",
     itm = [1,2,3],
-    lct = slice(1001, 1020),
-    day = slice(720, 750),
+    lct = (1001, 1020),
+    day = (720, 750),
 )
 ```
-
-It may seem like an odd quirk, but the order of an axis is important for [locality of reference](1) and profoundly affects both latency and throughput. This is because patches are stored contiguously whenever possible, and you can configure the storage patterns by changing axis orders.
-
-For the same reason, you can only append to an axis, not permute it, because shuffling it would change what patches store what. So to keep the catalog consistent it would incur possibly massive cascading rebuilds of every patch.
-
+There are three important parts that may surprise you:
+1. **Axes have a defined order, but it might not be sorted.**
+   - You define the axis' order when you create it, and that order informs splitting and searching patches.
+   - **Adjacent labels imply adjacent elements** in all quilts with those axes.
+   - Axis order affects [locality of reference](1), and profoundly affects latency and throughput. So when you define axes, be sure to order it so labels used together are adjacent to each other.
+2. **Ranges are inclusive on both ends** because the axes are not sorted.
+   - If you wanted a half-open interval you can drop the last element. But if you wanted a closed interval it's probably much harder for you to find the next element because it's not merely `n+1`.
+3. **Axes are append-only and unique, so they only support `union()`**
+   - Axes have to be unique because we use them like primary keys.
+   - Permuting axes would cause every affected patch to be rebuilt to maintain storage order. But you can still copy all the quilts onto the new axis instead, which may be faster.
 
 
 ## Commit a patch to the catalog
@@ -66,7 +69,7 @@ cat.commit(
     message = "Elements have been satisfactorily frobnicated",
     patch
 )
-# "master" and "latest" are the defaults, so you can write:
+# "latest" is the default tag, so you can write:
 cat.commit(
     quilt = "tot_sal_amt",
     message = "Elements have been satisfactorily frobnicated",

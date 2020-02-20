@@ -68,8 +68,8 @@ fn apply_patch(catalog: State<Arc<Catalog>>, commit: Json<WebCommit>) -> Fallibl
     let commit = commit.into_inner();
     let comm_id = catalog.commit(
         &commit.quilt_name,
-        &commit.parent_tag,
-        &commit.new_tag,
+        Some(&commit.parent_tag),
+        Some(&commit.new_tag),
         &commit.message,
         commit.patches,
     )?;

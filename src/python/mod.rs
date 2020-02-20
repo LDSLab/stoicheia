@@ -12,7 +12,6 @@ use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::sync::Arc;
 
 mod axis;
 mod patch;
@@ -22,36 +21,6 @@ pub use patch::Patch;
 
 #[pymodule]
 fn stoicheia(_py: Python, m: &PyModule) -> PyResult<()> {
-    // immutable example
-    fn axpy(a: f64, x: ArrayViewD<f64>, y: ArrayViewD<f64>) -> ArrayD<f64> {
-        a * &x + &y
-    }
-
-    // mutable example (no return)
-    fn mult(a: f64, mut x: ArrayViewMutD<f64>) {
-        x *= a;
-    }
-
-    // wrapper of `axpy`
-    #[pyfn(m, "axpy")]
-    fn axpy_py(
-        py: Python,
-        a: f64,
-        x: &PyArrayDyn<f64>,
-        y: &PyArrayDyn<f64>,
-    ) -> Py<PyArrayDyn<f64>> {
-        let x = x.as_array();
-        let y = y.as_array();
-        axpy(a, x, y).into_pyarray(py).to_owned()
-    }
-
-    // wrapper of `mult`
-    #[pyfn(m, "mult")]
-    fn mult_py(_py: Python, a: f64, x: &PyArrayDyn<f64>) -> PyResult<()> {
-        let x = x.as_array_mut();
-        mult(a, x);
-        Ok(())
-    }
     m.add_class::<crate::python::axis::Axis>()?;
     m.add_class::<crate::python::patch::Patch>()?;
     m.add_class::<Catalog>()?;
@@ -108,8 +77,8 @@ impl Catalog {
     ///     # You can select by axis labels (not by storage order!)
     ///     itm = [1,2,3],
     ///
-    ///     # slice() or None both will get the whole axis.
-    ///     lct = slice(),
+    ///     # Omitting an axis or giving None will get the whole axis.
+    ///     lct = None,
     ///
     ///     # Giving just one label will not remove that axis
     ///     # (because that makes merging patches easier)
@@ -134,18 +103,18 @@ impl Catalog {
                 if let Ok(selection) = v.extract::<Vec<i64>>() {
                     axes_selections.push(crate::AxisSelection::Labels {
                         name: axis_name,
-                        labels: selection.into_iter().map(|l| crate::Label(l)).collect_vec(),
+                        labels: selection,
                     });
                 } else if let Ok(selection) = v.extract::<(i64, i64)>() {
                     axes_selections.push(crate::AxisSelection::RangeInclusive {
                         name: axis_name,
-                        start: crate::Label(selection.0),
-                        end: crate::Label(selection.1),
+                        start: selection.0,
+                        end: selection.1,
                     });
                 } else if let Ok(selection) = v.extract::<i64>() {
                     axes_selections.push(crate::AxisSelection::Labels {
                         name: axis_name,
-                        labels: vec![crate::Label(selection)],
+                        labels: vec![selection],
                     });
                 } else {
                     // Play it safe and don't just ignore errors
