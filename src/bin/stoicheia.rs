@@ -5,7 +5,7 @@ extern crate rocket;
 use itertools::Itertools;
 use rocket::State;
 use rocket_contrib::json::Json;
-use serde_derive::{Serialize, Deserialize};
+use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use stoicheia::*;
@@ -41,16 +41,22 @@ fn create_quilt(
 //
 
 /// Get a slice out of a quilt
-#[post("/quilt/slice/<quilt_name>/<tag>", format = "json", data = "<patch_request>")]
+#[post(
+    "/quilt/slice/<quilt_name>/<tag>",
+    format = "json",
+    data = "<patch_request>"
+)]
 fn get_patch(
     catalog: State<Arc<Catalog>>,
     quilt_name: String,
     tag: String,
     patch_request: Json<PatchRequest>,
 ) -> Fallible<Json<Patch<f32>>> {
-    Ok(Json(
-        catalog.fetch(&quilt_name, &tag, patch_request.into_inner())?,
-    ))
+    Ok(Json(catalog.fetch(
+        &quilt_name,
+        &tag,
+        patch_request.into_inner(),
+    )?))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,16 +70,16 @@ struct WebCommit {
 
 /// Apply a patch to a quilt
 #[patch("/quilt/commit", format = "json", data = "<commit>")]
-fn apply_patch(catalog: State<Arc<Catalog>>, commit: Json<WebCommit>) -> Fallible<Json<i64>> {
+fn apply_patch(catalog: State<Arc<Catalog>>, commit: Json<WebCommit>) -> Fallible<()> {
     let commit = commit.into_inner();
-    let comm_id = catalog.commit(
+    catalog.commit(
         &commit.quilt_name,
         Some(&commit.parent_tag),
         Some(&commit.new_tag),
         &commit.message,
         commit.patches,
     )?;
-    Ok(Json(comm_id))
+    Ok(())
 }
 
 /// Get a copy of a whole axis.
@@ -91,7 +97,8 @@ fn append_axis(
     name: String,
     labels: Json<Vec<Label>>,
 ) -> Fallible<()> {
-    Ok(catalog.union_axis(&Axis::new(name, labels.into_inner())?)?)
+    catalog.union_axis(&Axis::new(name, labels.into_inner())?)?;
+    Ok(())
 }
 
 /// Create the rocket server separate from launching it, so we can test it

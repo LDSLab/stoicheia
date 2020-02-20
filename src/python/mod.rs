@@ -116,6 +116,8 @@ impl Catalog {
                         name: axis_name,
                         labels: vec![selection],
                     });
+                } else if v.is_none() {
+                    axes_selections.push(crate::AxisSelection::All { name: axis_name });
                 } else {
                     // Play it safe and don't just ignore errors
                     Err(StoiError::InvalidValue(
@@ -128,5 +130,41 @@ impl Catalog {
         Ok(crate::python::Patch {
             inner: self.inner.fetch(&quilt_name, &tag, axes_selections)?,
         })
+    }
+
+    /// Commit a patch to the catalog
+    ///
+    /// ```py
+    /// cat.commit(
+    ///     quilt = "tot_sal_amt",
+    ///     parent_tag = "latent", # <- Apply the changes to this tag
+    ///     new_tag = "latest",    # <- Name the result (can be the same)
+    ///     message = "Elements have been satisfactorily frobnicated",
+    ///     patch
+    /// )
+    /// # "latest" is the default tag, so you can write:
+    /// cat.commit(
+    ///     quilt = "tot_sal_amt",
+    ///     message = "Elements have been satisfactorily frobnicated",
+    ///     patch
+    /// )
+    ///```
+    pub fn commit(
+        &self,
+        quilt_name: String,
+        parent_tag: Option<&str>,
+        new_tag: Option<&str>,
+        message: String,
+        patches: Vec<&crate::python::Patch>,
+    ) -> PyResult<()> {
+        self.inner.commit(
+            &quilt_name,
+            parent_tag,
+            new_tag,
+            &message,
+            // TODO: Try to eliminate this copy
+            patches.into_iter().map(|p| p.inner.clone()).collect(),
+        )?;
+        Ok(())
     }
 }

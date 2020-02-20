@@ -19,7 +19,7 @@ impl Patch {
         obj.init(Self {
             inner: crate::Patch::new(
                 axes.into_iter().map(|ax| ax.inner.clone()).collect(),
-                content.as_array().to_owned()
+                content.as_array().to_owned(),
             )?,
         });
         Ok(())
@@ -47,9 +47,7 @@ impl Patch {
             self.inner
                 .axes()
                 .iter()
-                .map(|a| {
-                    PyArray1::from_slice(py, a.labels())
-                })
+                .map(|a| PyArray1::from_slice(py, a.labels()))
                 .collect(),
             self.inner.to_dense().into_pyarray(py).to_owned(),
         )

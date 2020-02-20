@@ -90,13 +90,17 @@ impl Axis {
     ///         Label(1), Label(2), Label(4), Label(5), Label(3), Label(7)
     ///     ]);
     ///
-    pub fn union(&mut self, other: &Axis) {
+    /// Returns true iff self was actually mutated in the process
+    pub fn union(&mut self, other: &Axis) -> bool {
         // Hash to speed up duplicate search, and then add only new labels
         let hash: HashSet<_> = self.labels.iter().copied().collect();
+        let mut mutated = false;
         other
             .labels
             .iter()
             .filter(|label| !hash.contains(label))
+            .inspect(|_| { mutated = true; })
             .for_each(|label| self.labels.push(*label));
+        mutated
     }
 }

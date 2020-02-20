@@ -304,8 +304,7 @@ mod test {
         assert_eq!(modified[[1]], 0.);
 
         // Unsorted labels
-        let mut base =
-            Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
+        let mut base = Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
         let revision = Patch::new(
             vec![Axis::new("item", vec![30, 10]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
@@ -318,8 +317,7 @@ mod test {
         assert_eq!(modified[[1]], 300.);
 
         // Unsorted, mismatched labels
-        let mut base =
-            Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
+        let mut base = Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
         let revision = Patch::new(
             vec![Axis::new("item", vec![10, 30]).unwrap()],
             nd::arr1(&[300., 100.]).into_dyn(),

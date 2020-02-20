@@ -1,4 +1,4 @@
-use numpy::{IntoPyArray, PyArrayDyn, PyArray1};
+use numpy::{IntoPyArray, PyArray1, PyArrayDyn};
 use pyo3::prelude::*;
 
 /// A sequence of distinct signed integer labels uniquely mapping to indices of an axis
@@ -13,17 +13,14 @@ pub struct Axis {
 #[pymethods]
 impl Axis {
     /// Create a new named axis from a copy of a sequence of integer labels
-    /// 
+    ///
     /// Keep in mind that order matters:
     ///  - with a Patch, it specifies the order of elements in that patch
     ///  - in a Catalog, it specifies the order of storage (and the most efficient retrieval order)
     #[new]
     pub fn new(obj: &PyRawObject, name: String, labels: &PyArrayDyn<i64>) -> PyResult<()> {
         obj.init(Self {
-            inner: crate::Axis::new(
-                name,
-                labels.as_array().iter().copied().collect(),
-            )?,
+            inner: crate::Axis::new(name, labels.as_array().iter().copied().collect())?,
         });
         Ok(())
     }

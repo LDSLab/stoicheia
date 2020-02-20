@@ -43,9 +43,9 @@ impl<'t> Quilt<'t> {
     }
 
     /// Commit a change to a quilt (convenience)
-    /// 
+    ///
     /// This method is a convenience function to call Catalog.commit(), but:
-    /// 
+    ///
     /// - `quilt_name` is this quilt
     /// - `parent_tag` is this tag
     /// - `new_tag` defaults to this tag (which means overwrite it)
@@ -54,7 +54,7 @@ impl<'t> Quilt<'t> {
         new_tag: Option<&str>,
         message: &str,
         patches: Vec<Patch<f32>>,
-    ) -> Fallible<i64> {
+    ) -> Fallible<()> {
         self.catalog.commit(
             &self.name,
             Some(&self.tag),

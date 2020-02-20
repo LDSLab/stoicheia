@@ -30,7 +30,6 @@ pub mod python;
 /// this, patches may cluster meaningless groups of points.
 pub type Label = i64;
 
-
 /// The database ID of a patch.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
 pub struct PatchID(i64);

@@ -85,15 +85,19 @@ impl Catalog {
         self.storage.get_axis(name)
     }
 
-    /// Replace the labels of an axis, in the order you would expect them to be stored
-    pub fn union_axis(&self, new_axis: &Axis) -> Fallible<()> {
+    /// Replace the labels of an axis, in the order you would expect them to be stored.
+    /// 
+    /// Returns true iff the axis was mutated in the process 
+    pub fn union_axis(&self, new_axis: &Axis) -> Fallible<bool> {
         // TODO: Race condition, needs a transaction
         let mut existing_axis = self
             .get_axis(&new_axis.name)
             .unwrap_or(Axis::empty(&new_axis.name));
-        existing_axis.union(new_axis);
-        self.storage.put_axis(&existing_axis)?;
-        Ok(())
+        let mutated = existing_axis.union(new_axis);
+        if mutated {
+            self.storage.put_axis(&existing_axis)?;
+        }
+        Ok(mutated)
     }
 
     /// Fetch a patch from a quilt.
@@ -103,7 +107,12 @@ impl Catalog {
     ///     (which is the order the labels are specified in the axis, not in your request)
     /// - You can request elements you haven't initialized yet, and you'll get zeros.
     /// - You may only request patches up to 1 GB, as a safety valve
-    pub fn fetch(&self, quilt_name: &str, tag: &str, request: PatchRequest) -> Fallible<Patch<f32>> {
+    pub fn fetch(
+        &self,
+        quilt_name: &str,
+        tag: &str,
+        mut request: PatchRequest,
+    ) -> Fallible<Patch<f32>> {
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
                 "Patches must have at least one axis",
@@ -118,11 +127,26 @@ impl Catalog {
         let mut axes = vec![];
         // Segments of each axis, which will be the edges of bounding boxes
         let mut segments_by_axis = vec![];
+
+        // They can't possibly use more than ten axes - just a safety measure.
+        request.truncate(10);
+
+        // Small note: we limit the axes here just as a safety measure
         for sel in request {
             let (axis, segments) = self.get_axis_from_selection(sel)?;
             axes.push(axis);
             segments_by_axis.push(segments);
         }
+
+        // Tack on any axes they forgot
+        for axis_name in self.get_quilt_details(quilt_name)?.axes {
+            if axes.iter().find(|a| a.name == axis_name).is_none() {
+                let (axis, segments) = self.get_axis_from_selection(AxisSelection::All{name: axis_name})?;
+                axes.push(axis);
+                segments_by_axis.push(segments);
+            }
+        }
+
         // At this point we know how big the output will be.
         // The error here is early to avoid the IO
         // and we don't construct the patch (which would have noticed and raised the same error)
@@ -231,6 +255,16 @@ impl Catalog {
     }
 
     /// Commit a patch to a quilt.
+    /// 
+    /// Commits are a pretty expensive operation - the system is designed for more reads than writes.
+    /// In specific, it will do at least all the following:
+    /// 
+    /// - Get quilt details, including full copies of all the axes
+    /// - Check, compact, and compress all the patches, splitting and balancing search indices
+    /// - Extend all the axes (if necessary) to include the area the patches cover
+    /// - Upload all the patches and their data
+    /// - Log the commit and change the tags to point to it
+    /// 
     pub fn commit(
         &self,
         quilt_name: &str,
@@ -238,16 +272,49 @@ impl Catalog {
         new_tag: Option<&str>,
         message: &str,
         patches: Vec<Patch<f32>>,
-    ) -> Fallible<i64> {
-        // TODO: actually implement this. It needs to split/balance...
-        self.storage
-            .put_commit(
-                quilt_name,
-                parent_tag.unwrap_or("latest"),
-                new_tag.unwrap_or("latest"),
-                message,
-                patches
-            )
+    ) -> Fallible<()> {
+        // TODO: There are just so many race conditions here
+        // TODO: Implement split/balance...
+        // TODO: Think about axis versioning - maybe not a good idea anyway?
+
+        // Check that the axes are consistent
+        let quilt_details = self.get_quilt_details(quilt_name)?;
+        for patch in &patches {
+            if patch
+                .axes()
+                .iter()
+                .map(|a| &a.name)
+                .sorted()
+                .ne(quilt_details.axes.iter().sorted())
+            {
+                return Err(StoiError::MisalignedAxes(format!(
+                    "the quilt \"{}\" has axes [{}] but the patch has [{}], which doesn't match. Please note broadcasting is not (yet) supported. The patch axes should match exactly.",
+                    quilt_name, quilt_details.axes.iter().join(", "), patch.axes().iter().map(|a|&a.name).join(", ")
+                )));
+            }
+        }
+
+        // Extend all axes as necessary to complete the patching
+        for axis_name in &quilt_details.axes {
+            let mut axis = self.get_axis(axis_name)?;
+            let mut mutated = false;
+            for patch in &patches {
+                // Linear search over max 4 elements so don't sweat it
+                mutated |= axis.union(&patch.axes().iter().find(|a| &a.name == axis_name).unwrap());
+            }
+            if mutated {
+                // This is actually quite expensive so it's worth avoiding it where possible
+                self.union_axis(&axis)?;
+            }
+        }
+
+        self.storage.put_commit(
+            quilt_name,
+            parent_tag.unwrap_or("latest"),
+            new_tag.unwrap_or("latest"),
+            message,
+            patches,
+        )
     }
 }
 
@@ -304,13 +371,13 @@ trait Storage: Send + Sync {
         new_tag: &str,
         message: &str,
         patches: Vec<Patch<f32>>,
-    ) -> Fallible<i64>;
+    ) -> Fallible<()>;
 }
 
 /// An implementation of tensor storage on SQLite
 struct SQLiteCatalog {
     base: PathBuf,
-    conn: CachedThreadLocal<rusqlite::Connection>
+    conn: CachedThreadLocal<rusqlite::Connection>,
 }
 impl SQLiteCatalog {
     /// Create a shared in-memory SQLite database
@@ -319,7 +386,8 @@ impl SQLiteCatalog {
             base: "file::memory:?cache=shared".into(),
             conn: CachedThreadLocal::new(),
         };
-        slf.get_conn()?.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
+        slf.get_conn()?
+            .execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
         Ok(Arc::new(slf))
     }
 
@@ -329,7 +397,8 @@ impl SQLiteCatalog {
             base,
             conn: CachedThreadLocal::new(),
         };
-        slf.get_conn()?.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
+        slf.get_conn()?
+            .execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
         Ok(Arc::new(slf))
     }
 
@@ -352,7 +421,7 @@ impl SQLiteCatalog {
         comm_id: i64,
         pat: Patch<f32>,
     ) -> Fallible<PatchID> {
-        let id = PatchID(self.gen_id());
+        let patch_id = PatchID(self.gen_id());
         conn.execute("BEGIN;", NO_PARAMS)?;
         conn.execute(
             "INSERT OR REPLACE INTO patch(
@@ -362,9 +431,9 @@ impl SQLiteCatalog {
                 dim_1_min, dim_1_max,
                 dim_2_min, dim_2_max,
                 dim_3_min, dim_3_max
-            ) VALUES (?,?,?,?,?,?,?,?,?);",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?);",
             &[
-                &id as &dyn ToSql,
+                &patch_id as &dyn ToSql,
                 &comm_id,
                 // TODO: HACK: Support real bounding boxes
                 &(-1 << 30),
@@ -380,10 +449,10 @@ impl SQLiteCatalog {
         // TODO: If this serialize fails it will deadlock the connection by not rolling back
         conn.execute(
             "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
-            &[&id as &dyn ToSql, &bincode::serialize(&pat)?],
+            &[&patch_id as &dyn ToSql, &bincode::serialize(&pat)?],
         )?;
         conn.execute("COMMIT;", NO_PARAMS)?;
-        Ok(id)
+        Ok(patch_id)
     }
 
     /// Generate an id using the time plus a small salt
@@ -540,7 +609,7 @@ impl Storage for SQLiteCatalog {
         new_tag: &str,
         message: &str,
         patches: Vec<Patch<f32>>,
-    ) -> Fallible<i64> {
+    ) -> Fallible<()> {
         let comm_id: i64 = self.gen_id();
 
         let conn = self.get_conn()?;
@@ -549,15 +618,20 @@ impl Storage for SQLiteCatalog {
         }
         // TODO: Race condition
         conn.execute(
+            // 1. Look for a tag given it's name and quilt.
+            // 2. If there is one, get it's commit id and make that the parent commit ID to this one
+            // 3. If there isn't one, then *still insert*, but with a null parent commit ID
             "INSERT INTO Comm(
                 comm_id,
                 parent_comm_id,
                 message
             ) SELECT 
-                ?, Parent.comm_id, ?
-            FROM Tag Parent
-            WHERE tag_name = ?;",
-            &[&comm_id as &dyn ToSql, &message, &parent_tag],
+                ? comm_id,
+                Parent.comm_id,
+                ? message
+            FROM (SELECT ? quilt_name, ? tag_name)
+            LEFT JOIN Tag Parent USING (quilt_name, tag_name);",
+            &[&comm_id as &dyn ToSql, &message, &quilt_name, &parent_tag],
         )?;
         conn.execute(
             "INSERT OR REPLACE INTO Tag(
@@ -567,7 +641,7 @@ impl Storage for SQLiteCatalog {
             ) VALUES (?, ?, ?)",
             &[&quilt_name as &dyn ToSql, &new_tag, &comm_id],
         )?;
-        Ok(comm_id)
+        Ok(())
     }
 }
 
@@ -600,8 +674,7 @@ mod tests {
             .expect("Should be able to get an axis I just made");
         assert!(ax.labels() == &[] as &[Label]);
 
-        ax = Axis::new("uyiuyoiuy", vec![1, 5])
-            .expect("Should be able to create an axis");
+        ax = Axis::new("uyiuyoiuy", vec![1, 5]).expect("Should be able to create an axis");
 
         // Union an axis
         cat.union_axis(&ax)
