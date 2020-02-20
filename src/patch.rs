@@ -150,9 +150,9 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
                     // This cell has no buddy
                     continue 'cell;
                 }
-                // TODO: maybe uget when this looks stable
-                *self_value = shard[&pat_point[..]];
             }
+            // TODO: maybe uget when this looks stable
+            *self_value = shard[&pat_point[..]];
         }
         Ok(())
     }

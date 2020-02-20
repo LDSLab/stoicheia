@@ -53,7 +53,7 @@ There are three important parts that may surprise you:
    - **Adjacent labels imply adjacent elements** in all quilts with those axes.
    - Axis order affects [locality of reference](1), and profoundly affects latency and throughput. So when you define axes, be sure to order it so labels used together are adjacent to each other.
 2. **Ranges are inclusive on both ends** because the axes are not sorted.
-   - If you wanted a half-open interval you can drop the last element. But if you wanted a closed interval it's probably much harder for you to find the next element because it's not merely `n+1`.
+   - If you wanted a half-open interval you can drop the last element. (We did this because if you had half-open and wanted a closed interval, you'd have to find the next element because it's not merely `n+1`.
 3. **Axes are append-only and unique, so they only support `union()`**
    - Axes have to be unique because we use them like primary keys.
    - Permuting axes would cause every affected patch to be rebuilt to maintain storage order. But you can still copy all the quilts onto the new axis instead, which may be faster.
