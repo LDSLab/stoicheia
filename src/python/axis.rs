@@ -28,6 +28,11 @@ impl Axis {
         Ok(())
     }
 
+    /// Get the name of this axis
+    pub fn name(&self) -> &str {
+        &self.inner.name
+    }
+
     /// Get a copy of the integer labels associated with each element of this axis
     pub fn labels<'py>(&self, py: Python<'py>) -> &'py PyArray1<i64> {
         Vec::from(self.inner.labels()).into_pyarray(py)

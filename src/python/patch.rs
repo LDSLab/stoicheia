@@ -14,10 +14,13 @@ impl Patch {
     /// This copies the content and labels to prevent mutation,
     /// so it's not very efficient.
     #[new]
-    pub fn new(obj: &PyRawObject, axes: &PyList) -> PyResult<()> {
+    pub fn new(obj: &PyRawObject, axes: &PyList, content: &PyArrayDyn<f32>) -> PyResult<()> {
         let axes: Vec<&super::Axis> = axes.extract()?;
         obj.init(Self {
-            inner: crate::Patch::from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
+            inner: crate::Patch::new(
+                axes.into_iter().map(|ax| ax.inner.clone()).collect(),
+                content.as_array().to_owned()
+            )?,
         });
         Ok(())
     }
