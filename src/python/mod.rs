@@ -167,4 +167,19 @@ impl Catalog {
         )?;
         Ok(())
     }
+
+    /// Untag a commit, to "delete" it
+    /// 
+    /// Untagging a commit doesn't remove its effects, it only makes it inaccessible
+    /// and allows (now or any time in the future) for the library to:
+    /// 
+    /// - Merge it into its successots, if it has any
+    /// - Garbage collect it otherwise
+    pub fn untag(
+        &self,
+        quilt_name: String,
+        tag: String
+    ) -> PyResult<()> {
+        Ok(self.inner.untag(&quilt_name, &tag)?)
+    }
 }

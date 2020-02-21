@@ -13,9 +13,16 @@ def test_create_quilt():
 
 def test_fetch_empty():
     cat = Catalog()
+    try:
+        pat = cat.fetch("sales", "latest", itm=1, lct=[2,3,4])
+        assert False, "Should have failed because of missing quilt/axes"
+    except ValueError:
+        # This is the right thing to do
+        pass
+
     cat.create_quilt("sales", ["itm", "lct", "day"])
 
-    # One kind of empty - where we have an empty axis so the result should be empty
+    # Empty axis: the result should have zero size
     pat = cat.fetch("sales", "latest", itm=1, lct=[2,3,4])
     axes, content = pat.export()
     assert np.array_equal(axes[0], np.array([1]))
@@ -23,7 +30,7 @@ def test_fetch_empty():
     assert np.array_equal(axes[2], np.array([]))
     assert np.array_equal(content, np.zeros((1,3,0), dtype=np.float32))
 
-    # Cool, so now a different kind of empty: the axes are filled but the content is empty
+    # Empty content: the content should have size but be 0
     pat = cat.fetch("sales", "latest", itm=1, lct=[2,3,4], day=[700])
     axes, content = pat.export()
     assert np.array_equal(axes[0], np.array([1]))
@@ -114,3 +121,8 @@ def test_commit_patch():
     assert np.array_equal(axes[1], np.array([2,3,4,5]))
     assert np.array_equal(axes[2], np.array([700]))
     assert np.array_equal(content, np.array([[[1],[101],[102],[106]]], dtype=np.float32))
+
+
+    # Test untag, to make sure it doesn't throw an error
+    cat.untag("sales", "latest")
+    pat = cat.fetch("sales", "latest", itm=1, lct=[2,3,4])

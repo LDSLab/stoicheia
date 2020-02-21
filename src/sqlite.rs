@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::path::PathBuf;
 use crate::{Fallible, StoiError, Patch, Axis, BoundingBox, PatchID, QuiltDetails};
 use crate::catalog::{StorageConnection, StorageTransaction};
-use rusqlite::{ToSql, NO_PARAMS};
+use rusqlite::{ToSql, NO_PARAMS, OptionalExtension};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -120,13 +120,17 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     }
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
-    fn get_axis(&self, name: &str) -> Fallible<Axis> {
-        let res: Vec<u8> = self.txn.query_row(
+    fn get_axis(&self, axis_name: &str) -> Fallible<Axis> {
+        let res: Option<Vec<u8>> = self.txn.query_row(
             "SELECT content FROM AxisContent WHERE axis_name = ?",
-            &[&name],
+            &[&axis_name],
             |r| r.get(0),
-        )?;
-        Ok(bincode::deserialize(&res[..])?)
+        ).optional()?;
+        match res {
+            None => Err(StoiError::NotFound("axis doesn't exist", axis_name.into())),
+            Some(x) => Ok(bincode::deserialize(&x[..])?),
+        }
+       
     }
 
     /// Create a quilt
@@ -148,11 +152,15 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     /// Get extended information about a quilt
     fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails> {
-        Ok(self.txn.query_row_and_then(
+        let deets = self.txn.query_row_and_then(
             "SELECT quilt_name, axes FROM quilt WHERE quilt_name = ?",
             &[&quilt_name],
             |r| QuiltDetails::try_from(r),
-        )?)
+        ).optional()?;
+        match deets {
+            None => Err(StoiError::NotFound("quilt doesn't exist", quilt_name.into())),
+            Some(x) => Ok(x),
+        }
     }
 
     /// List the currently available quilts
