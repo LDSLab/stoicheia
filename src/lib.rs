@@ -14,6 +14,8 @@ pub use quilt::{Quilt, QuiltDetails};
 mod catalog;
 pub use catalog::Catalog;
 
+mod sqlite;
+
 mod axis;
 pub use axis::Axis;
 
