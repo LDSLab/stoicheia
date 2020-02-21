@@ -16,6 +16,8 @@ pub enum StoiError {
     InvalidValue(&'static str),
     #[error("misaligned axes: {0}")]
     MisalignedAxes(String),
+    #[error("runtime error: {0}")]
+    RuntimeError(&'static str)
 }
 
 pub type Fallible<T> = Result<T, StoiError>;

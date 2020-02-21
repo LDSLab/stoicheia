@@ -67,10 +67,9 @@ pub enum AxisSelection {
 }
 
 /// Selection by axis indicess, similar to .iloc[] in Pandas
-type AxisSegment = std::ops::RangeInclusive<usize>;
+pub(crate) type AxisSegment = (usize, usize);
 
 /// An N-dimensional box referencing a contiguous region of multiple axes.
 ///
 /// Remember that in these boxes, storage indices (usize) are always consecutive, but labels (i64) may not be.
-#[derive(Debug)]
-pub struct BoundingBox(Vec<AxisSegment>);
+pub(crate) type BoundingBox = Vec<AxisSegment>;
