@@ -1056,7 +1056,6 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "thiserror",
- "thread_local",
 ]
 
 [[package]]

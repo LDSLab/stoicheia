@@ -4,8 +4,7 @@ use rusqlite::{ToSql, NO_PARAMS};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::path::PathBuf;
-use std::sync::Arc;
-use thread_local::CachedThreadLocal;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::{
     Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRequest, Quilt,
@@ -376,54 +375,45 @@ trait Storage: Send + Sync {
 
 /// An implementation of tensor storage on SQLite
 struct SQLiteCatalog {
-    base: PathBuf,
-    conn: CachedThreadLocal<rusqlite::Connection>,
+    conn: Mutex<rusqlite::Connection>,
 }
 impl SQLiteCatalog {
     /// Create a shared in-memory SQLite database
     pub fn connect_in_memory() -> Fallible<Arc<Self>> {
-        let slf = Self {
-            base: "file::memory:?cache=shared".into(),
-            conn: CachedThreadLocal::new(),
-        };
-        slf.get_conn()?
-            .execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
-        Ok(Arc::new(slf))
+        Self::connect("file::memory:?cache=shared".into())
     }
 
     /// Connect to the underlying SQLite database
     pub fn connect(base: PathBuf) -> Fallible<Arc<Self>> {
         let slf = Self {
-            base,
-            conn: CachedThreadLocal::new(),
+            conn: Mutex::new(rusqlite::Connection::open(base)?),
         };
-        slf.get_conn()?
-            .execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
+        {
+            let mut conn = slf.get_conn()?;
+            let txn = conn.transaction()?;
+            txn.busy_timeout(std::time::Duration::from_secs(5))?;
+            txn.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
+            txn.commit()?;
+        }
         Ok(Arc::new(slf))
     }
 
-    /// Gets the thread-local SQLite connection
-    ///
-    /// There is a separate connection for each thread because it saves time connecting,
-    /// but it can't be global because they can't be used from different threads simultaneously
-    fn get_conn(&self) -> Fallible<&rusqlite::Connection> {
-        self.conn.get_or_try(|| {
-            let conn = rusqlite::Connection::open(&self.base)?;
-            conn.busy_timeout(std::time::Duration::from_secs(5))?;
-            Ok(conn)
-        })
+    /// Acquires the SQLite connection
+    fn get_conn<'t>(&self) -> Fallible<MutexGuard<rusqlite::Connection>> {
+        let conn = self.conn.lock()
+            .expect("sqlite mutex poisoned: cascade failure");
+        Ok(conn)
     }
 
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
     fn put_patch(
         &self,
-        conn: &rusqlite::Connection,
+        txn: &rusqlite::Transaction,
         comm_id: i64,
         pat: Patch<f32>,
     ) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
-        conn.execute("BEGIN;", NO_PARAMS)?;
-        conn.execute(
+        txn.execute(
             "INSERT OR REPLACE INTO Patch(
                 patch_id,
                 comm_id,
@@ -447,11 +437,10 @@ impl SQLiteCatalog {
             ],
         )?;
         // TODO: If this serialize fails it will deadlock the connection by not rolling back
-        conn.execute(
+        txn.execute(
             "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
             &[&patch_id as &dyn ToSql, &bincode::serialize(&pat)?],
         )?;
-        conn.execute("COMMIT;", NO_PARAMS)?;
         Ok(patch_id)
     }
 
@@ -632,13 +621,13 @@ impl Storage for SQLiteCatalog {
         patches: Vec<Patch<f32>>,
     ) -> Fallible<()> {
         let comm_id: i64 = self.gen_id();
-
-        let conn = self.get_conn()?;
+        let mut conn = self.get_conn()?;
+        let txn = conn.transaction()?;
         for pat in patches {
-            self.put_patch(conn, comm_id, pat)?;
+            self.put_patch(&txn, comm_id, pat)?;
         }
         // TODO: Race condition
-        conn.execute(
+        txn.execute(
             // 1. Look for a tag given it's name and quilt.
             // 2. If there is one, get it's commit id and make that the parent commit ID to this one
             // 3. If there isn't one, then *still insert*, but with a null parent commit ID
@@ -654,7 +643,7 @@ impl Storage for SQLiteCatalog {
             LEFT JOIN Tag Parent USING (quilt_name, tag_name);",
             &[&comm_id as &dyn ToSql, &message, &quilt_name, &parent_tag],
         )?;
-        conn.execute(
+        txn.execute(
             "INSERT OR REPLACE INTO Tag(
                 quilt_name,
                 tag_name,
@@ -662,6 +651,7 @@ impl Storage for SQLiteCatalog {
             ) VALUES (?, ?, ?)",
             &[&quilt_name as &dyn ToSql, &new_tag, &comm_id],
         )?;
+        txn.commit()?;
         Ok(())
     }
 }
