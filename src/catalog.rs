@@ -182,16 +182,8 @@ impl Catalog {
         //
         // Find the patches we need to fill all the bounding boxes
         //
-
-        // TODO: This could be async
-        let mut patch_ids = HashSet::new();
-        for bbox in bounding_boxes {
-            for patch_id in txn
-                .get_patches_by_bounding_boxes(&quilt_name, &tag, &[bbox])?
-            {
-                patch_ids.insert(patch_id);
-            }
-        }
+    
+        let patch_ids = txn.get_patches_by_bounding_boxes(&quilt_name, &tag, &bounding_boxes)?;
 
         //
         // Download and apply all the patches
@@ -451,6 +443,7 @@ impl<'t> SQLiteCatalog<'t> {
         pat: Patch<f32>,
     ) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
+        println!("Putting patch {:?} in commit {}, with content {:?}", patch_id, comm_id, pat);
         self.txn.execute(
             "INSERT OR REPLACE INTO Patch(
                 patch_id,
@@ -590,7 +583,7 @@ impl<'t> Storage for SQLiteCatalog<'t> {
                         INNER JOIN Comm Parent ON (Kid.parent_comm_id = Parent.comm_id)
                 )
                 SELECT
-                    DISTINCT patch_id
+                    patch_id
                     FROM CommitAncestry
                     INNER JOIN Patch USING (comm_id)
                     --  INNER JOIN json_each(?) BoundingBox ON (
@@ -603,6 +596,7 @@ impl<'t> Storage for SQLiteCatalog<'t> {
                     --      AND dim_3_min <= json_extract(value, '$[6]')
                     --      AND dim_3_max >= json_extract(value, '$[7]')
                     --  )
+                    GROUP BY patch_id
                     ORDER BY comm_id ASC
             ",
             )?
@@ -636,6 +630,8 @@ impl<'t> Storage for SQLiteCatalog<'t> {
         {
             patch_ids.push(patch_id?);
         }
+
+        println!("Patch IDs {:?}", patch_ids);
         Ok(Box::new(patch_ids.into_iter()))
     }
 
