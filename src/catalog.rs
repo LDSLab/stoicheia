@@ -184,10 +184,10 @@ impl Catalog {
 
         // TODO: This could be async
         let mut patch_ids = HashSet::new();
-        for bbox in &bounding_boxes {
+        for bbox in bounding_boxes {
             for patch_id in self
                 .storage
-                .get_patches_by_bounding_box(&quilt_name, &tag, bbox)?
+                .get_patches_by_bounding_boxes(&quilt_name, &tag, &[bbox])?
             {
                 patch_ids.insert(patch_id);
             }
@@ -341,11 +341,11 @@ trait Storage: Send + Sync {
     ///
     /// This method exists in case the database supports efficient multidimensional range queries
     /// such as SQLite or Postgres/PostGIS
-    fn get_patches_by_bounding_box(
+    fn get_patches_by_bounding_boxes(
         &self,
         quilt_name: &str,
         tag: &str,
-        bound: &BoundingBox,
+        bounds: &[BoundingBox],
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>>;
 
     /// Get a single patch by ID
@@ -424,7 +424,7 @@ impl SQLiteCatalog {
         let patch_id = PatchID(self.gen_id());
         conn.execute("BEGIN;", NO_PARAMS)?;
         conn.execute(
-            "INSERT OR REPLACE INTO patch(
+            "INSERT OR REPLACE INTO Patch(
                 patch_id,
                 comm_id,
                 dim_0_min, dim_0_max,
@@ -535,59 +535,80 @@ impl Storage for SQLiteCatalog {
         Ok(map)
     }
 
-    fn get_patches_by_bounding_box(
+    fn get_patches_by_bounding_boxes(
         &self,
         quilt_name: &str,
         tag: &str,
-        bound: &BoundingBox,
+        bounding_boxes: &[BoundingBox],
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>> {
         // TODO: Verify that the dimensions match what we see in the quilt
-        // The SQL formatting happens here because patch_tree
-        let bound = (0..4)
-            .map(|i| bound.0.get(i).cloned().unwrap_or(0..=1 << 30))
-            .collect_vec();
-
         // Fetch patch ID's first, and then get them one by one. This is so we don't concurrently have multiple connections open.
         let mut patch_ids: Vec<PatchID> = vec![];
         for patch_id in self
             .get_conn()?
             .prepare(
-                "SELECT patch_id
-            FROM Patch
-            INNER JOIN Comm USING (comm_id)
-            INNER JOIN Tag USING (comm_id)
-            WHERE
-                quilt_name = ?
-                AND tag_name = ?
-                AND dim_0_min <= ?
-                AND dim_0_max >= ?
-                AND dim_1_min <= ?
-                AND dim_1_max >= ?
-                AND dim_2_min <= ?
-                AND dim_2_max >= ?
-                AND dim_3_min <= ?
-                AND dim_3_max >= ?
+                "
+                WITH RECURSIVE CommitAncestry AS (
+                    SELECT
+                            comm_id parent_comm_id,
+                            comm_id
+                        FROM Tag
+                        WHERE quilt_name = ?
+                        AND tag_name = ?
+                    UNION ALL
+                    SELECT
+                            Parent.parent_comm_id,
+                            Parent.comm_id
+                        FROM CommitAncestry Kid
+                        INNER JOIN Comm Parent ON (Kid.parent_comm_id = Parent.comm_id)
+                )
+                SELECT
+                    DISTINCT patch_id
+                    FROM CommitAncestry
+                    INNER JOIN Patch USING (comm_id)
+                    --  INNER JOIN json_each(?) BoundingBox ON (
+                    --          dim_0_min <= json_extract(value, '$[0]')
+                    --      AND dim_0_max >= json_extract(value, '$[1]')
+                    --      AND dim_1_min <= json_extract(value, '$[2]')
+                    --      AND dim_1_max >= json_extract(value, '$[3]')
+                    --      AND dim_2_min <= json_extract(value, '$[4]')
+                    --      AND dim_2_max >= json_extract(value, '$[5]')
+                    --      AND dim_3_min <= json_extract(value, '$[6]')
+                    --      AND dim_3_max >= json_extract(value, '$[7]')
+                    --  )
+                    ORDER BY comm_id ASC
             ",
             )?
             .query_map(
                 &[
-                    &quilt_name,
+                    &quilt_name as &dyn ToSql,
                     &tag,
-                    &(*bound[0].end() as i64) as &dyn ToSql,
-                    &(*bound[0].start() as i64),
-                    &(*bound[1].end() as i64),
-                    &(*bound[1].start() as i64),
-                    &(*bound[2].end() as i64),
-                    &(*bound[2].start() as i64),
-                    &(*bound[3].end() as i64),
-                    &(*bound[3].start() as i64),
+                    // &serde_json::to_string(&bounding_boxes
+                    //     .iter()
+                    //     .map(|bx| [
+                    //         bx.0.get(0).cloned().unwrap_or(0..=1<<30),
+                    //         bx.0.get(1).cloned().unwrap_or(0..=1<<30),
+                    //         bx.0.get(2).cloned().unwrap_or(0..=1<<30),
+                    //         bx.0.get(3).cloned().unwrap_or(0..=1<<30),
+                    //     ])
+                    //     .map(|bx| [
+                    //         *bx[0].start(),
+                    //         *bx[0].end(),
+                    //         *bx[1].start(),
+                    //         *bx[1].end(),
+                    //         *bx[2].start(),
+                    //         *bx[2].end(),
+                    //         *bx[3].start(),
+                    //         *bx[3].end(),
+                    //     ])
+                    //     .collect_vec()
+                    //)?
                 ],
                 |r| r.get(0),
             )?
         {
             patch_ids.push(patch_id?);
         }
-
         Ok(Box::new(patch_ids.into_iter()))
     }
 

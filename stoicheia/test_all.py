@@ -14,11 +14,22 @@ def test_create_quilt():
 def test_fetch_empty():
     cat = Catalog()
     cat.create_quilt("sales", ["itm", "lct", "day"])
+
+    # One kind of empty - where we have an empty axis so the result should be empty
     pat = cat.fetch("sales", "latest", itm=1, lct=[2,3,4])
     axes, content = pat.export()
     assert np.array_equal(axes[0], np.array([1]))
     assert np.array_equal(axes[1], np.array([2,3,4]))
-    assert np.array_equal(content, np.array([[0,0,0]]))
+    assert np.array_equal(axes[2], np.array([]))
+    assert np.array_equal(content, np.zeros((1,3,0), dtype=np.float32))
+
+    # Cool, so now a different kind of empty: the axes are filled but the content is empty
+    pat = cat.fetch("sales", "latest", itm=1, lct=[2,3,4], day=[700])
+    axes, content = pat.export()
+    assert np.array_equal(axes[0], np.array([1]))
+    assert np.array_equal(axes[1], np.array([2,3,4]))
+    assert np.array_equal(axes[2], np.array([700]))
+    assert np.array_equal(content, np.array([[[0],[0],[0]]]))
 
 
 def test_init_an_axis():

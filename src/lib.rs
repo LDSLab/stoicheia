@@ -72,4 +72,5 @@ type AxisSegment = std::ops::RangeInclusive<usize>;
 /// An N-dimensional box referencing a contiguous region of multiple axes.
 ///
 /// Remember that in these boxes, storage indices (usize) are always consecutive, but labels (i64) may not be.
+#[derive(Debug)]
 pub struct BoundingBox(Vec<AxisSegment>);
