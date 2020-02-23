@@ -468,15 +468,20 @@ mod tests {
                 vec![
                     AxisSelection::All { name: "itm".into() },
                     AxisSelection::Labels {
-                        name: "itm".into(),
+                        name: "lct".into(),
                         labels: vec![1],
                     },
                 ],
             )
             .unwrap();
-        assert_eq!(pat.content().shape(), &[0, 1]);
+        // We asked for two dimensions but any dimensions you missed will be tacked on
+        assert_eq!(pat.ndim(), 3);
+        assert_eq!(pat.content().shape(), &[0, 1, 0]);
 
-        pat = Patch::from_axes(vec![Axis::range("itm", 9..12), Axis::range("xyz", 2..4)]).unwrap();
+        pat = Patch::from_axes(vec![
+            Axis::range("itm", 9..12),
+            Axis::range("xyz", 2..4)
+        ]).unwrap();
 
         pat.content_mut().fill(1.0);
     }

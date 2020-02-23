@@ -13,7 +13,8 @@ pub(crate) struct SQLiteConnection {
 impl SQLiteConnection {
     /// Create a shared in-memory SQLite database
     pub fn connect_in_memory() -> Fallible<Arc<Self>> {
-        Self::connect("file::memory:?cache=shared".into())
+        //Self::connect("file::memory:?cache=shared".into())
+        Self::connect(":memory:".into())
     }
 
     /// Connect to the underlying SQLite database
