@@ -4,7 +4,7 @@ use pyo3::types::PyList;
 
 #[pyclass]
 pub struct Patch {
-    pub inner: crate::Patch<f32>,
+    pub inner: crate::Patch,
 }
 
 #[pymethods]

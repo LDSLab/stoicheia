@@ -108,7 +108,7 @@ impl Catalog {
         quilt_name: &str,
         tag: &str,
         mut request: PatchRequest,
-    ) -> Fallible<Patch<f32>> {
+    ) -> Fallible<Patch> {
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
                 "Patches must have at least one axis",
@@ -214,7 +214,7 @@ impl Catalog {
         parent_tag: Option<&str>,
         new_tag: Option<&str>,
         message: &str,
-        patches: Vec<Patch<f32>>,
+        patches: Vec<Patch>,
     ) -> Fallible<()> {
         // TODO: Implement split/balance...
         // TODO: Think about axis versioning - maybe not a good idea anyway?
@@ -317,7 +317,7 @@ pub(crate) trait StorageTransaction {
     ) -> Fallible<Box<dyn Iterator<Item = PatchID>>>;
 
     /// Get a single patch by ID
-    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>>;
+    fn get_patch(&self, id: PatchID) -> Fallible<Patch>;
 
     /// Create an axis, possibly ignoring it if it exists
     fn create_axis(&self, name: &str, ignore_if_exists: bool) -> Fallible<()>;
@@ -338,7 +338,7 @@ pub(crate) trait StorageTransaction {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<Patch<f32>>,
+        patches: Vec<Patch>,
     ) -> Fallible<()>;
 
     /// Finish and commit the transaction successfully

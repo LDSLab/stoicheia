@@ -54,7 +54,7 @@ impl<'t> SQLiteTransaction<'t> {
     fn put_patch(
         &self,
         comm_id: i64,
-        pat: Patch<f32>,
+        pat: Patch,
     ) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
         println!("Putting patch {:?} in commit {}, with content {:?}", patch_id, comm_id, pat);
@@ -257,7 +257,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         Ok(Box::new(patch_ids.into_iter()))
     }
 
-    fn get_patch(&self, id: PatchID) -> Fallible<Patch<f32>> {
+    fn get_patch(&self, id: PatchID) -> Fallible<Patch> {
         let res: Vec<u8> = self.txn.query_row(
             "SELECT content FROM PatchContent WHERE patch_id = ?",
             &[&id],
@@ -274,7 +274,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<Patch<f32>>,
+        patches: Vec<Patch>,
     ) -> Fallible<()> {
         let comm_id: i64 = self.gen_id();
         for pat in patches {

@@ -51,7 +51,7 @@ fn get_patch(
     quilt_name: String,
     tag: String,
     patch_request: Json<PatchRequest>,
-) -> Fallible<Json<Patch<f32>>> {
+) -> Fallible<Json<Patch>> {
     Ok(Json(catalog.fetch(
         &quilt_name,
         &tag,
@@ -65,7 +65,7 @@ struct WebCommit {
     parent_tag: String,
     new_tag: String,
     message: String,
-    patches: Vec<Patch<f32>>,
+    patches: Vec<Patch>,
 }
 
 /// Apply a patch to a quilt

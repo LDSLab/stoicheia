@@ -2,6 +2,7 @@
 //! Sharded tensor storage and retrieval
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
 extern crate ndarray as nd;
 extern crate rusqlite as sql;
 

@@ -1,6 +1,7 @@
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
-use ndarray::ArrayD;
+use ndarray::{ArrayViewMutD, ArrayViewD, ArrayD};
+use ndarray as nd;
 use num_traits::Zero;
 use std::collections::HashMap;
 
@@ -15,21 +16,22 @@ use std::collections::HashMap;
 ///       - They must be unique
 ///       - They might not be consecutive (it depends on the Quilt)
 ///       - They might overlap other patches (it depends on the Quilt)
-///   - A regular array of some datatype in the same order as the list of axes
+///   - A regular array of 32-bit floats in the same order as the list of axes
+/// 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct Patch<Elem: Copy + Default + Zero> {
+pub struct Patch {
     /// Names and labels of the axes
     axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
-    dense: ArrayD<Elem>,
+    dense: ArrayD<f32>,
 }
 
-impl<Elem: Copy + Default + Zero> Patch<Elem> {
+impl Patch {
     /// Create a new patch from an array and some labels
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
-    pub fn new(axes: Vec<Axis>, dense: ArrayD<Elem>) -> Fallible<Self> {
+    pub fn new(axes: Vec<Axis>, dense: ArrayD<f32>) -> Fallible<Self> {
         if axes.len() != dense.ndim() {
             return Err(StoiError::InvalidValue(
                 "The number of labeled axes doesn't match the number of axes in the dense tensor.",
@@ -64,11 +66,13 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
         self.dense.ndim()
     }
 
+
+
     /// Apply another patch to this one, changing `self` where it overlaps with `pat`.
     ///
     /// This is not the same as merging the patches, because this only changes `self` where it
     /// overlaps with `pat`, and won't allocate or expand either one.
-    pub fn apply(&mut self, pat: &Patch<Elem>) -> Fallible<()> {
+    pub fn apply(&mut self, pat: &Patch) -> Fallible<()> {
         if self.axes.iter().map(|a| &a.name).sorted().collect_vec()
             != pat.axes.iter().map(|a| &a.name).sorted().collect_vec()
         {
@@ -96,10 +100,9 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
             .collect();
         // Now roll the tensor if necessary
         let shard = pat.dense.view().permuted_axes(&axis_shuffle[..]);
-        // TODO: Avoid cloning the axes
         let shard_axes = axis_shuffle
             .iter()
-            .map(|&ax_ix| pat.axes[ax_ix].clone())
+            .map(|&ax_ix| &pat.axes[ax_ix])
             .collect_vec();
         // Get rid of the reference to pat because we will just confuse ourselves otherwise.
         // Because it's axes don't match self.
@@ -127,34 +130,61 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
                 self.axes[ax_ix]
                     .labels()
                     .iter()
-                    .map(|l| pat_label_to_idx.get(l).copied())
-                    .collect::<Vec<Option<usize>>>(),
+                    .map(|l| *pat_label_to_idx.get(l).unwrap_or(&std::usize::MAX))
+                    .collect::<Vec<usize>>(),
             );
         }
 
-        //
-        // TODO: Slice off any excess and try to copy a patch as a single dense array
-        //
+        // 3. Shuffle and apply the patch
+        // 
+        //    - Create two buffers
+        //    - For each axis
+        //      - Copy data from one to the other un label-shuffle order
+        //      - Swap the buffers
 
-        //
-        // Assign every element. This may need to change for some optimizations later.
-        //
-        let mut pat_point = vec![0usize; shard.ndim()];
-        'cell: for (self_point, self_value) in self.dense.indexed_iter_mut() {
-            // Fill in the location to read from in patch
-            for ax_ix in 0..shard.ndim() {
-                if let Some(pat_idx) = label_shuffles[ax_ix][self_point[ax_ix]] {
-                    // This cell in self has a buddy in pat
-                    pat_point[ax_ix] = pat_idx;
-                } else {
-                    // This cell has no buddy
-                    continue 'cell;
-                }
-            }
-            // TODO: maybe uget when this looks stable
-            *self_value = shard[&pat_point[..]];
+        // RD is a dead write here
+        let mut rd = self.dense.clone();
+        let mut wr = ArrayD::from_elem(self.dense.shape(), std::f32::NAN);
+        shard
+            .shape()
+            .iter()
+            .enumerate()
+            .fold(wr.view_mut(), |mut wr, (ax_ix, &width)| {
+                wr.slice_axis_inplace(nd::Axis(ax_ix), (0..width).into());
+                wr
+            })
+            .assign(&shard);
+
+        for ax_ix in 0..shard.ndim() {
+            std::mem::swap(&mut rd, &mut wr);
+            Self::shuffle_dense(
+                &rd.view(),
+                &mut wr.view_mut(),
+                nd::Axis(ax_ix),
+                &label_shuffles[ax_ix]
+            );
         }
+        self.dense.zip_mut_with(
+            &wr,
+            |a, b| if !b.is_nan() { *a = *b; }
+        );
         Ok(())
+    }
+
+    /// Shuffle an axis into a copy
+    fn shuffle_dense(
+            read: &ArrayViewD<f32>,
+            write: &mut ArrayViewMutD<f32>,
+            axis: nd::Axis,
+            shuffle: &[usize]
+        ) {
+        for write_index in 0..shuffle.len() {
+            if shuffle[write_index] != std::usize::MAX {
+                write
+                    .index_axis_mut(axis, write_index)
+                    .assign(&read.index_axis(axis, shuffle[write_index]));
+            }
+        }
     }
 
     /// Possibly compact the patch, removing unused labels
@@ -240,17 +270,17 @@ impl<Elem: Copy + Default + Zero> Patch<Elem> {
     }
 
     /// Render the patch as a dense array. This always copies the data.
-    pub fn to_dense(&self) -> nd::ArrayD<Elem> {
+    pub fn to_dense(&self) -> nd::ArrayD<f32> {
         self.dense.clone()
     }
 
     /// Get a reference to the content
-    pub fn content(&self) -> nd::ArrayViewD<Elem> {
+    pub fn content(&self) -> nd::ArrayViewD<f32> {
         self.dense.view()
     }
 
     /// Get a mutable reference to the content
-    pub fn content_mut(&mut self) -> nd::ArrayViewMutD<Elem> {
+    pub fn content_mut(&mut self) -> nd::ArrayViewMutD<f32> {
         self.dense.view_mut()
     }
 

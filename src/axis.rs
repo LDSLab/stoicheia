@@ -49,13 +49,18 @@ impl Axis {
     ///
     /// It takes its value because if it isn't distinct it probably shouldn't exist anyway
     pub fn check_distinct(self) -> Fallible<Self> {
-        if self.labels.iter().collect::<HashSet<_>>().len() != self.labels.len() {
-            Err(StoiError::InvalidValue(
-                "Axis labels must not be duplicated",
-            ))
-        } else {
-            Ok(self)
+        // Switched from HashSet to sorting for a 15-fold best case speedup and about 20% worst-case slowdown
+        // see axis benchmarks for details
+        let mut l = self.labels().to_vec();
+        l.sort_unstable();
+        for i in 1..l.len() {
+            if l[i-1] == l[i] {
+                return Err(StoiError::InvalidValue(
+                    "Axis labels must not be duplicated",
+                ));
+            }
         }
+        Ok(self)
     }
 
     /// Get a reference to the labels

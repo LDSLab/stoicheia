@@ -53,7 +53,7 @@ impl<'t> Quilt<'t> {
         &self,
         new_tag: Option<&str>,
         message: &str,
-        patches: Vec<Patch<f32>>,
+        patches: Vec<Patch>,
     ) -> Fallible<()> {
         self.catalog.commit(
             &self.name,
