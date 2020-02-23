@@ -54,7 +54,7 @@ impl Axis {
         let mut l = self.labels().to_vec();
         l.sort_unstable();
         for i in 1..l.len() {
-            if l[i-1] == l[i] {
+            if l[i - 1] == l[i] {
                 return Err(StoiError::InvalidValue(
                     "Axis labels must not be duplicated",
                 ));
@@ -104,7 +104,9 @@ impl Axis {
             .labels
             .iter()
             .filter(|label| !hash.contains(label))
-            .inspect(|_| { mutated = true; })
+            .inspect(|_| {
+                mutated = true;
+            })
             .for_each(|label| self.labels.push(*label));
         mutated
     }

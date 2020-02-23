@@ -1,8 +1,8 @@
+use crate::sqlite::SQLiteConnection;
 use crate::Fallible;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::sqlite::SQLiteConnection;
 
 use crate::{
     Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRequest, Quilt,
@@ -87,8 +87,8 @@ impl Catalog {
     }
 
     /// Replace the labels of an axis, in the order you would expect them to be stored.
-    /// 
-    /// Returns true iff the axis was mutated in the process 
+    ///
+    /// Returns true iff the axis was mutated in the process
     pub fn union_axis(&self, new_axis: &Axis) -> Fallible<bool> {
         let txn = self.storage.txn()?;
         let mutated = txn.union_axis(new_axis)?;
@@ -103,12 +103,7 @@ impl Catalog {
     ///     (which is the order the labels are specified in the axis, not in your request)
     /// - You can request elements you haven't initialized yet, and you'll get zeros.
     /// - You may only request patches up to 1 GB, as a safety valve
-    pub fn fetch(
-        &self,
-        quilt_name: &str,
-        tag: &str,
-        mut request: PatchRequest,
-    ) -> Fallible<Patch> {
+    pub fn fetch(&self, quilt_name: &str, tag: &str, mut request: PatchRequest) -> Fallible<Patch> {
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
                 "Patches must have at least one axis",
@@ -140,7 +135,8 @@ impl Catalog {
         // Tack on any axes they forgot
         for axis_name in txn.get_quilt_details(quilt_name)?.axes {
             if axes.iter().find(|a| a.name == axis_name).is_none() {
-                let (axis, segments) = txn.get_axis_from_selection(AxisSelection::All{name: axis_name})?;
+                let (axis, segments) =
+                    txn.get_axis_from_selection(AxisSelection::All { name: axis_name })?;
                 axes.push(axis);
                 segments_by_axis.push(segments);
             }
@@ -163,12 +159,10 @@ impl Catalog {
         // If there are more than 1000 bounding boxes, collapse them, to protect the R*tree (or whatever index) from DOS
         let total_bounding_boxes: usize = segments_by_axis.iter().map(|s| s.len()).product();
         let bounding_boxes = if total_bounding_boxes <= 1000 {
-            vec![
-                segments_by_axis
-                    .iter()
-                    .map(|_| (0, std::usize::MAX))
-                    .collect(),
-            ]
+            vec![segments_by_axis
+                .iter()
+                .map(|_| (0, std::usize::MAX))
+                .collect()]
         } else {
             segments_by_axis
                 .iter()
@@ -180,7 +174,7 @@ impl Catalog {
         //
         // Find the patches we need to fill all the bounding boxes
         //
-    
+
         let patch_ids = txn.get_patches_by_bounding_boxes(&quilt_name, &tag, &bounding_boxes)?;
 
         //
@@ -198,16 +192,16 @@ impl Catalog {
     }
 
     /// Commit a patch to a quilt.
-    /// 
+    ///
     /// Commits are a pretty expensive operation - the system is designed for more reads than writes.
     /// In specific, it will do at least all the following:
-    /// 
+    ///
     /// - Get quilt details, including full copies of all the axes
     /// - Check, compact, and compress all the patches, splitting and balancing search indices
     /// - Extend all the axes (if necessary) to include the area the patches cover
     /// - Upload all the patches and their data
     /// - Log the commit and change the tags to point to it
-    /// 
+    ///
     pub fn commit(
         &self,
         quilt_name: &str,
@@ -263,26 +257,21 @@ impl Catalog {
         Ok(())
     }
 
-
     /// Untag a commit, to "delete" it
-    /// 
+    ///
     /// Untagging a commit doesn't remove its effects, it only makes it inaccessible
     /// and allows (now or any time in the future) for the library to:
-    /// 
+    ///
     /// - Merge it into its successots, if it has any
     /// - Garbage collect it otherwise
-    pub fn untag(
-        &self,
-        _quilt_name: &str,
-        _tag: &str
-    ) -> Fallible<()> {
+    pub fn untag(&self, _quilt_name: &str, _tag: &str) -> Fallible<()> {
         // TODO: Implement untag
         Ok(())
-    } 
+    }
 }
 
 pub(crate) trait StorageConnection: Send + Sync {
-    type Transaction : StorageTransaction;
+    type Transaction: StorageTransaction;
     fn txn(self) -> Fallible<Self::Transaction>;
 }
 
@@ -344,7 +333,6 @@ pub(crate) trait StorageTransaction {
     /// Finish and commit the transaction successfully
     fn finish(self) -> Fallible<()>;
 
-
     /// Use the actual axis values to resolve a request into specific labels
     ///
     /// This is necessary because we need to turn the axis labels into storage indices for range queries
@@ -393,8 +381,8 @@ pub(crate) trait StorageTransaction {
     }
 
     /// Replace the labels of an axis, in the order you would expect them to be stored.
-    /// 
-    /// Returns true iff the axis was mutated in the process 
+    ///
+    /// Returns true iff the axis was mutated in the process
     fn union_axis(&self, new_axis: &Axis) -> Fallible<bool> {
         let mut existing_axis = self
             .get_axis(&new_axis.name)

@@ -1,14 +1,14 @@
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::path::PathBuf;
-use crate::{Fallible, StoiError, Patch, Axis, BoundingBox, PatchID, QuiltDetails};
 use crate::catalog::{StorageConnection, StorageTransaction};
-use rusqlite::{ToSql, NO_PARAMS, OptionalExtension};
+use crate::{Axis, BoundingBox, Fallible, Patch, PatchID, QuiltDetails, StoiError};
+use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// An implementation of tensor storage on SQLite
 pub(crate) struct SQLiteConnection {
-    conn: Mutex<rusqlite::Connection>
+    conn: Mutex<rusqlite::Connection>,
 }
 impl SQLiteConnection {
     /// Create a shared in-memory SQLite database
@@ -25,7 +25,9 @@ impl SQLiteConnection {
             txn.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
             txn.commit()?;
         }
-        Ok(Arc::new(Self { conn: Mutex::new(conn) }))
+        Ok(Arc::new(Self {
+            conn: Mutex::new(conn),
+        }))
     }
 }
 
@@ -35,14 +37,14 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
         for i in 0..10 {
             if let Ok(txn) = self.conn.try_lock() {
                 txn.execute_batch("BEGIN;")?;
-                return Ok(SQLiteTransaction {
-                    txn,
-                })
+                return Ok(SQLiteTransaction { txn });
             } else {
-                std::thread::sleep(std::time::Duration::from_millis(1<<i));
+                std::thread::sleep(std::time::Duration::from_millis(1 << i));
             }
         }
-        Err(StoiError::RuntimeError("sqlite mutex could not be acquired"))
+        Err(StoiError::RuntimeError(
+            "sqlite mutex could not be acquired",
+        ))
     }
 }
 
@@ -51,13 +53,12 @@ pub(crate) struct SQLiteTransaction<'t> {
 }
 impl<'t> SQLiteTransaction<'t> {
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
-    fn put_patch(
-        &self,
-        comm_id: i64,
-        pat: Patch,
-    ) -> Fallible<PatchID> {
+    fn put_patch(&self, comm_id: i64, pat: Patch) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
-        println!("Putting patch {:?} in commit {}, with content {:?}", patch_id, comm_id, pat);
+        println!(
+            "Putting patch {:?} in commit {}, with content {:?}",
+            patch_id, comm_id, pat
+        );
         self.txn.execute(
             "INSERT OR REPLACE INTO Patch(
                 patch_id,
@@ -121,16 +122,18 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
     fn get_axis(&self, axis_name: &str) -> Fallible<Axis> {
-        let res: Option<Vec<u8>> = self.txn.query_row(
-            "SELECT content FROM AxisContent WHERE axis_name = ?",
-            &[&axis_name],
-            |r| r.get(0),
-        ).optional()?;
+        let res: Option<Vec<u8>> = self
+            .txn
+            .query_row(
+                "SELECT content FROM AxisContent WHERE axis_name = ?",
+                &[&axis_name],
+                |r| r.get(0),
+            )
+            .optional()?;
         match res {
             None => Err(StoiError::NotFound("axis doesn't exist", axis_name.into())),
             Some(x) => Ok(bincode::deserialize(&x[..])?),
         }
-       
     }
 
     /// Create a quilt
@@ -152,13 +155,19 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     /// Get extended information about a quilt
     fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails> {
-        let deets = self.txn.query_row_and_then(
-            "SELECT quilt_name, axes FROM quilt WHERE quilt_name = ?",
-            &[&quilt_name],
-            |r| QuiltDetails::try_from(r),
-        ).optional()?;
+        let deets = self
+            .txn
+            .query_row_and_then(
+                "SELECT quilt_name, axes FROM quilt WHERE quilt_name = ?",
+                &[&quilt_name],
+                |r| QuiltDetails::try_from(r),
+            )
+            .optional()?;
         match deets {
-            None => Err(StoiError::NotFound("quilt doesn't exist", quilt_name.into())),
+            None => Err(StoiError::NotFound(
+                "quilt doesn't exist",
+                quilt_name.into(),
+            )),
             Some(x) => Ok(x),
         }
     }

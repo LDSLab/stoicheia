@@ -1,7 +1,7 @@
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
-use ndarray::{ArrayViewMutD, ArrayViewD, ArrayD};
 use ndarray as nd;
+use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use num_traits::Zero;
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 ///       - They might not be consecutive (it depends on the Quilt)
 ///       - They might overlap other patches (it depends on the Quilt)
 ///   - A regular array of 32-bit floats in the same order as the list of axes
-/// 
+///
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Patch {
     /// Names and labels of the axes
@@ -65,8 +65,6 @@ impl Patch {
     pub fn ndim(&self) -> usize {
         self.dense.ndim()
     }
-
-
 
     /// Apply another patch to this one, changing `self` where it overlaps with `pat`.
     ///
@@ -136,7 +134,7 @@ impl Patch {
         }
 
         // 3. Shuffle and apply the patch
-        // 
+        //
         //    - Create two buffers
         //    - For each axis
         //      - Copy data from one to the other un label-shuffle order
@@ -161,23 +159,40 @@ impl Patch {
                 &rd.view(),
                 &mut wr.view_mut(),
                 nd::Axis(ax_ix),
-                &label_shuffles[ax_ix]
+                &label_shuffles[ax_ix],
             );
         }
-        self.dense.zip_mut_with(
-            &wr,
-            |a, b| if !b.is_nan() { *a = *b; }
-        );
+        self.dense.zip_mut_with(&wr, |a, b| {
+            if !b.is_nan() {
+                *a = *b;
+            }
+        });
         Ok(())
     }
 
     /// Shuffle an axis into a copy
     fn shuffle_dense(
-            read: &ArrayViewD<f32>,
-            write: &mut ArrayViewMutD<f32>,
-            axis: nd::Axis,
-            shuffle: &[usize]
-        ) {
+        read: &ArrayViewD<f32>,
+        write: &mut ArrayViewMutD<f32>,
+        axis: nd::Axis,
+        shuffle: &[usize],
+    ) {
+        for write_index in 0..shuffle.len() {
+            if shuffle[write_index] != std::usize::MAX {
+                write
+                    .index_axis_mut(axis, write_index)
+                    .assign(&read.index_axis(axis, shuffle[write_index]));
+            }
+        }
+    }
+
+    /// Shuffle an axis into a copy
+    fn shuffle_dense_inplace(
+        read: &ArrayViewD<f32>,
+        write: &mut ArrayViewMutD<f32>,
+        axis: nd::Axis,
+        shuffle: &[usize],
+    ) {
         for write_index in 0..shuffle.len() {
             if shuffle[write_index] != std::usize::MAX {
                 write

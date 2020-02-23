@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use stoicheia::*;
 use rand;
+use stoicheia::*;
 
 #[inline]
 fn new_axis(labels: &[i64]) -> Axis {
@@ -8,11 +8,11 @@ fn new_axis(labels: &[i64]) -> Axis {
 }
 
 pub fn bench_axis(c: &mut Criterion) {
-    let labels : Vec<i64> = (0..100000).collect();
+    let labels: Vec<i64> = (0..100000).collect();
     c.bench_function("Axis::new ordered clone", |b| {
         b.iter(|| new_axis(black_box(&labels)))
     });
-    let labels : Vec<i64> = (0..100000).map(|_| rand::random()).collect();
+    let labels: Vec<i64> = (0..100000).map(|_| rand::random()).collect();
     c.bench_function("Axis::new random clone", |b| {
         b.iter(|| new_axis(black_box(&labels)))
     });
@@ -20,19 +20,20 @@ pub fn bench_axis(c: &mut Criterion) {
 
 pub fn bench_patch(c: &mut Criterion) {
     c.bench_function("Patch::from_axes 2d clone", |b| {
-        b.iter(|| Patch::from_axes(black_box(vec![
-            Axis::range("dim0", 1000..2000),
-            Axis::range("dim1", 0..1000)
-        ])))
+        b.iter(|| {
+            Patch::from_axes(black_box(vec![
+                Axis::range("dim0", 1000..2000),
+                Axis::range("dim1", 0..1000),
+            ]))
+        })
     });
-
-
 
     c.bench_function("Patch::apply perfect no-clone", |b| {
         let mut target_patch = Patch::from_axes(black_box(vec![
             Axis::range("dim0", 1000..2000),
-            Axis::range("dim1", 0..1000)
-        ])).unwrap();
+            Axis::range("dim1", 0..1000),
+        ]))
+        .unwrap();
         let source_patch = target_patch.clone();
 
         b.iter(|| target_patch.apply(black_box(&source_patch)))
