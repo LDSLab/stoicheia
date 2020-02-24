@@ -1,7 +1,7 @@
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray as nd;
-use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
+use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD, ArrayBase};
 use num_traits::Zero;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -387,11 +387,28 @@ impl PatchBuilder {
         self.axes.push(Axis::new(name, range.into_iter().collect()));
         self
     }
+
     /// Give the content and finish
-    pub fn content(self, content: Option<ArrayD<f32>>) -> Fallible<Patch> {
+    pub fn content<J: Into<Option<ArrayD<f32>>>>(self, content: J) -> Fallible<Patch> {
         Patch::new(
             self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
-            content
+            content.into().map(|c| c.into_dyn())
+        )
+    }
+
+    /// Create a 1d array on the spot, set the content, and return the new patch
+    pub fn content_1d(self, content: &[f32]) -> Fallible<Patch> {
+        Patch::new(
+            self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
+            Some(nd::arr1(content).into_dyn())
+        )
+    }
+    
+    /// Create a 2d array on the spot, set the content, and return the new patch
+    pub fn content_2d<V: nd::FixedInitializer<Elem=f32> + Clone>(self, content: &[V]) -> Fallible<Patch> {
+        Patch::new(
+            self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
+            Some(nd::arr2(content).into_dyn())
         )
     }
 }
@@ -412,7 +429,7 @@ mod test {
             .unwrap();
         let revision = Patch::build()
             .axis("item", &[1, 3])
-            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .content_1d(&[100., 300.])
             .unwrap();
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
@@ -426,7 +443,7 @@ mod test {
             .unwrap();
         let revision = Patch::build()
             .axis("item", &[1, 2])
-            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .content_1d(&[100., 300.])
             .unwrap();
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
@@ -440,7 +457,7 @@ mod test {
             .unwrap();
         let revision = Patch::build()
             .axis("item", &[30, 10])
-            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .content_1d(&[100., 300.])
             .unwrap();
         base.apply(&revision).unwrap();
 
@@ -455,7 +472,7 @@ mod test {
             .unwrap();
         let revision = Patch::build()
             .axis("item", &[30, 10])
-            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .content_1d(&[100., 300.])
             .unwrap();
         base.apply(&revision).unwrap();
 
@@ -470,7 +487,7 @@ mod test {
             .unwrap();
         let revision = Patch::build()
             .axis("item", &[10, 30])
-            .content(Some(nd::arr1(&[300., 100.]).into_dyn()))
+            .content_1d(&[300., 100.])
             .unwrap();
         base.apply(&revision).unwrap();
 
@@ -490,7 +507,7 @@ mod test {
         let revision = Patch::build()
             .axis("item", &[1, 3])
             .axis("store", &[1, 3])
-            .content(Some(nd::arr2(&[[100., 200.], [300., 400.]]).into_dyn()))
+            .content_2d(&[[100., 200.], [300., 400.]])
             .unwrap();
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
