@@ -4,6 +4,7 @@ use ndarray as nd;
 use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use num_traits::Zero;
 use std::collections::HashMap;
+use std::convert::TryInto;
 
 /// A tensor with labeled axes
 ///
@@ -31,7 +32,18 @@ impl Patch {
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
-    pub fn new(axes: Vec<Axis>, dense: ArrayD<f32>) -> Fallible<Self> {
+    pub fn new<A, E>(orig_axes: Vec<A>, dense: ArrayD<f32>)
+        -> Fallible<Self>
+        where
+            A: TryInto<Axis, Error=E>,
+            E: Into<StoiError>
+        {
+        // TODO: is there some way we can into() less than three times?
+        let mut axes : Vec<Axis> = vec![];
+        for ax in orig_axes {
+            axes.push(ax.try_into().map_err(|e| e.into())?);
+        }
+
         if axes.len() != dense.ndim() {
             return Err(StoiError::InvalidValue(
                 "The number of labeled axes doesn't match the number of axes in the dense tensor.",
@@ -47,18 +59,39 @@ impl Patch {
             ));
         }
 
-        Ok(Self { axes, dense })
-    }
-
-    /// Create a new empty patch given some axes
-    pub fn from_axes(axes: Vec<Axis>) -> Fallible<Self> {
         let dims = axes.iter().map(|a| a.len()).collect_vec();
         if dims.iter().product::<usize>() > 256 << 20 {
             return Err(StoiError::TooLarge(
                 "Patches must be 256 million elements or less (1GB of 32bit floats)",
             ));
         }
-        Self::new(axes, ArrayD::default(dims))
+
+        Ok(Self { axes, dense })
+    }
+
+    /// Create a new empty patch given some axes
+    /// 
+    /// Cloning axes small enough to be part of a patch is usually cheap, so this
+    /// function uses several clones and conversions to make using it more convenient
+    pub fn try_from_axes<A, E>(orig_axes: Vec<A>)
+        -> Fallible<Self>
+        where
+        A: TryInto<Axis, Error=E>,
+        E: Into<StoiError>
+        {
+        // TODO: is there some way we can into() less than three times?
+        let mut axes : Vec<Axis> = vec![];
+        for ax in orig_axes {
+            axes.push(ax.try_into().map_err(|e| e.into())?);
+        }
+        
+        let dims = axes.iter().map(|a| a.len()).collect_vec();
+        if dims.iter().product::<usize>() > 256 << 20 {
+            return Err(StoiError::TooLarge(
+                "Patches must be 256 million elements or less (1GB of 32bit floats)",
+            ));
+        }
+        Self::new(axes, ArrayD::from_elem(dims, std::f32::NAN))
     }
 
     /// How many dimensions in this patch
@@ -106,6 +139,16 @@ impl Patch {
         // Because it's axes don't match self.
         std::mem::drop(pat);
 
+        // Create a new box large enough to hold either patch or self
+        let max_shape = self
+            .dense
+            .shape()
+            .iter()
+            .zip(shard.shape().iter())
+            .map(|(&x, &y)| x.max(y))
+            .collect_vec();
+        let mut union = ArrayD::from_elem(&max_shape[..], std::f32::NAN);
+
         // 2: Precompute the axes so we don't search on every element
         //    This also helps for optimizing the rectangle to copy
         //
@@ -116,7 +159,7 @@ impl Patch {
         //              The index into pat of the corresponding label
         //              or else None
         let mut label_shuffles = vec![];
-        for ax_ix in 0..shard.ndim() {
+        for ax_ix in 0..self.ndim() {
             let pat_label_to_idx: HashMap<Label, usize> = shard_axes[ax_ix]
                 .labels()
                 .iter()
@@ -133,36 +176,34 @@ impl Patch {
             );
         }
 
-        // 3. Shuffle and apply the patch
-        //
-        //    - Create two buffers
-        //    - For each axis
-        //      - Copy data from one to the other un label-shuffle order
-        //      - Swap the buffers
+        // 3. Shuffle the intersection into self-space and apply the patch
+        //  - Fill the union box with the incoming patch
+        //  - For each axis
+        //    - Copy data from one to the other in label-shuffle order
+        //    - Swap the buffers
+        //  - Erase the planes that aren't used in self, so that they don't mutate
+        {
+            Self::merge_slice(shard.view(), union.view_mut(), shard.shape(), |x, y| {
+                *x = *y
+            });
 
-        // RD is a dead write here
-        let mut rd = self.dense.clone();
-        let mut wr = ArrayD::from_elem(self.dense.shape(), std::f32::NAN);
-        shard
-            .shape()
-            .iter()
-            .enumerate()
-            .fold(wr.view_mut(), |mut wr, (ax_ix, &width)| {
-                wr.slice_axis_inplace(nd::Axis(ax_ix), (0..width).into());
-                wr
-            })
-            .assign(&shard);
-
-        for ax_ix in 0..shard.ndim() {
-            std::mem::swap(&mut rd, &mut wr);
-            Self::shuffle_dense(
-                &rd.view(),
-                &mut wr.view_mut(),
-                nd::Axis(ax_ix),
-                &label_shuffles[ax_ix],
+            union = Self::shuffle_pull_ndim(
+                union,
+                &label_shuffles[..],
             );
+
+            for (ax_ix, label_shuffle) in label_shuffles.iter().enumerate() {
+                for (self_idx, pat_idx) in label_shuffle.iter().enumerate() {
+                    if *pat_idx == std::usize::MAX {
+                        union.index_axis_mut(nd::Axis(ax_ix), self_idx).fill(std::f32::NAN);
+                    }
+                }
+            }
         }
-        self.dense.zip_mut_with(&wr, |a, b| {
+
+        // 5. Now that all labels on all axes match, apply the patch
+        let sh = self.dense.shape().to_owned();
+        Self::merge_slice(union.view(), self.dense.view_mut(), &sh[..], |a, b| {
             if !b.is_nan() {
                 *a = *b;
             }
@@ -170,13 +211,46 @@ impl Patch {
         Ok(())
     }
 
-    /// Shuffle an axis into a copy
-    fn shuffle_dense(
+    /// Copy an N-d rectangle at the origin between incongruent arrays
+    ///
+    /// Make congruent slices on both sides and then assign()'s
+    fn merge_slice<F: Fn(&mut f32, &f32)>(
+        read: ArrayViewD<f32>,
+        write: ArrayViewMutD<f32>,
+        size: &[usize],
+        merge: F,
+    ) {
+        let read_slice = size
+            .iter()
+            .enumerate()
+            .fold(read, |mut rd, (ax_ix, &width)| {
+                rd.slice_axis_inplace(nd::Axis(ax_ix), (0..width).into());
+                rd
+            });
+        let mut write_slice = size
+            .iter()
+            .enumerate()
+            .fold(write, |mut wr, (ax_ix, &width)| {
+                wr.slice_axis_inplace(nd::Axis(ax_ix), (0..width).into());
+                wr
+            });
+
+        write_slice.zip_mut_with(&read_slice, merge);
+    }
+
+    /// Copy (N-1)D planes, with possible replication
+    ///
+    /// "pull" here means there is one index for each write plane.
+    /// As a result, you can make multiple copies of the each plane if you want.
+    ///
+    /// Use std::usize::MAX to skip a plane
+    fn shuffle_pull(
         read: &ArrayViewD<f32>,
         write: &mut ArrayViewMutD<f32>,
         axis: nd::Axis,
         shuffle: &[usize],
     ) {
+        assert_eq!(shuffle.len(), write.len_of(axis));
         for write_index in 0..shuffle.len() {
             if shuffle[write_index] != std::usize::MAX {
                 write
@@ -186,20 +260,30 @@ impl Patch {
         }
     }
 
-    /// Shuffle an axis into a copy
-    fn shuffle_dense_inplace(
-        read: &ArrayViewD<f32>,
-        write: &mut ArrayViewMutD<f32>,
-        axis: nd::Axis,
-        shuffle: &[usize],
-    ) {
-        for write_index in 0..shuffle.len() {
-            if shuffle[write_index] != std::usize::MAX {
-                write
-                    .index_axis_mut(axis, write_index)
-                    .assign(&read.index_axis(axis, shuffle[write_index]));
-            }
+    /// Shuffle each plane of all tensor axes, with possible replication
+    ///
+    /// "pull" here means there is one index for each write plane.
+    /// As a result, you can make multiple copies of the each plane if you want.
+    ///
+    /// Use std::usize::MAX to skip a plane
+    ///
+    /// The results will be in "original" after this function completes
+    fn shuffle_pull_ndim(
+        mut original: ArrayD<f32>,
+        shuffle: &[Vec<usize>],
+    ) -> ArrayD<f32> {
+        assert_eq!(original.ndim(), shuffle.len());
+        let mut scratch = original.clone();
+        for ax_ix in 0..original.ndim() {
+            Self::shuffle_pull(
+                &original.view(),
+                &mut scratch.view_mut(),
+                nd::Axis(ax_ix),
+                &shuffle[ax_ix],
+            );
+            std::mem::swap(&mut original, &mut scratch);
         }
+        original
     }
 
     /// Possibly compact the patch, removing unused labels
@@ -315,7 +399,7 @@ mod test {
         let item_axis = Axis::new("item", vec![1, 3]).unwrap();
 
         // Set both elements
-        let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
+        let mut base = Patch::try_from_axes(vec![&item_axis]).unwrap();
         let revision =
             Patch::new(vec![item_axis.clone()], nd::arr1(&[100., 300.]).into_dyn()).unwrap();
         base.apply(&revision).unwrap();
@@ -324,7 +408,7 @@ mod test {
         assert_eq!(modified[[1]], 300.);
 
         // Set one but miss the other
-        let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
+        let mut base = Patch::try_from_axes(vec![&item_axis]).unwrap();
         let revision = Patch::new(
             vec![Axis::new("item", vec![1, 2]).unwrap()],
             nd::arr1(&[100., 300.]).into_dyn(),
@@ -333,25 +417,27 @@ mod test {
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
         assert_eq!(modified[[0]], 100.);
-        assert_eq!(modified[[1]], 0.);
+        assert!(modified[[1]].is_nan());
 
         // Miss both
-        let mut base = Patch::from_axes(vec![item_axis.clone()]).unwrap();
+        let mut base = Patch::try_from_axes(vec![&item_axis]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![10, 30]).unwrap()],
+            vec![("item", vec![10, 30])],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
         base.apply(&revision).unwrap();
 
         let modified = base.to_dense();
-        assert_eq!(modified[[0]], 0.);
-        assert_eq!(modified[[1]], 0.);
+        assert!(modified[[0]].is_nan());
+        assert!(modified[[1]].is_nan());
 
         // Unsorted labels
-        let mut base = Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
+        let mut base = Patch::try_from_axes(vec![
+            ("item", vec![30, 10])
+        ]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![30, 10]).unwrap()],
+            vec![("item", vec![30, 10])],
             nd::arr1(&[100., 300.]).into_dyn(),
         )
         .unwrap();
@@ -362,9 +448,9 @@ mod test {
         assert_eq!(modified[[1]], 300.);
 
         // Unsorted, mismatched labels
-        let mut base = Patch::from_axes(vec![Axis::new("item", vec![30, 10]).unwrap()]).unwrap();
+        let mut base = Patch::try_from_axes(vec![("item", vec![30, 10])]).unwrap();
         let revision = Patch::new(
-            vec![Axis::new("item", vec![10, 30]).unwrap()],
+            vec![("item", vec![10, 30])],
             nd::arr1(&[300., 100.]).into_dyn(),
         )
         .unwrap();
@@ -380,10 +466,10 @@ mod test {
         let item_axis = Axis::new("item", vec![1, 3]).unwrap();
         let store_axis = Axis::new("store", vec![-1, -3]).unwrap();
 
-        // Set along both axes
-        let mut base = Patch::from_axes(vec![item_axis.clone(), store_axis.clone()]).unwrap();
+        // Perfect patch, same order and same overlap
+        let mut base = Patch::try_from_axes(vec![&item_axis, &store_axis]).unwrap();
         let revision = Patch::new(
-            vec![item_axis.clone(), store_axis.clone()],
+            vec![&item_axis, &store_axis],
             nd::arr2(&[[100., 200.], [300., 400.]]).into_dyn(),
         )
         .unwrap();

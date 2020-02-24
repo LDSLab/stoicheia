@@ -1,5 +1,6 @@
 use crate::{Fallible, Label, StoiError};
 use std::collections::HashSet;
+use std::convert::{From, TryFrom};
 
 /// A sequence of distinct signed integer labels uniquely mapping to indices of an axis
 ///
@@ -109,5 +110,19 @@ impl Axis {
             })
             .for_each(|label| self.labels.push(*label));
         mutated
+    }
+}
+
+impl From<&Axis> for Axis {
+    fn from(a: &Axis) -> Self {
+        a.clone()
+    }
+}
+
+
+impl<L: IntoIterator<Item=Label>> TryFrom<(&str, L)> for Axis {
+    type Error = StoiError;
+    fn try_from(x: (&str, L)) -> Result<Self, StoiError> {
+        Axis::new(x.0, x.1.into_iter().collect())
     }
 }

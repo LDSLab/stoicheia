@@ -18,6 +18,8 @@ pub enum StoiError {
     MisalignedAxes(String),
     #[error("runtime error: {0}")]
     RuntimeError(&'static str),
+    #[error("impossible error to handle infallible conversions")]
+    ImpossibleError(#[from] std::convert::Infallible)
 }
 
 pub type Fallible<T> = Result<T, StoiError>;

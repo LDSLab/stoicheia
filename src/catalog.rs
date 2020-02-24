@@ -182,7 +182,7 @@ impl Catalog {
         //
 
         // TODO: This should definitely be async or at least concurrent
-        let mut target_patch = Patch::from_axes(axes)?;
+        let mut target_patch = Patch::try_from_axes(axes)?;
         for patch_id in patch_ids {
             let source_patch = txn.get_patch(patch_id)?;
             target_patch.apply(&source_patch)?;
@@ -478,9 +478,9 @@ mod tests {
         assert_eq!(pat.ndim(), 3);
         assert_eq!(pat.content().shape(), &[0, 1, 0]);
 
-        pat = Patch::from_axes(vec![
-            Axis::range("itm", 9..12),
-            Axis::range("xyz", 2..4)
+        pat = Patch::try_from_axes(vec![
+            ("itm", 9..=13),
+            ("xyz", 2..=5)
         ]).unwrap();
 
         pat.content_mut().fill(1.0);

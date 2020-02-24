@@ -19,9 +19,9 @@ pub fn bench_axis(c: &mut Criterion) {
 }
 
 pub fn bench_patch(c: &mut Criterion) {
-    c.bench_function("Patch::from_axes 2d clone", |b| {
+    c.bench_function("Patch::try_from_axes 2d clone", |b| {
         b.iter(|| {
-            Patch::from_axes(black_box(vec![
+            Patch::try_from_axes(black_box(vec![
                 Axis::range("dim0", 1000..2000),
                 Axis::range("dim1", 0..1000),
             ]))
@@ -29,7 +29,7 @@ pub fn bench_patch(c: &mut Criterion) {
     });
 
     c.bench_function("Patch::apply perfect no-clone", |b| {
-        let mut target_patch = Patch::from_axes(black_box(vec![
+        let mut target_patch = Patch::try_from_axes(black_box(vec![
             Axis::range("dim0", 1000..2000),
             Axis::range("dim1", 0..1000),
         ]))

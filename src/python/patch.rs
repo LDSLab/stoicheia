@@ -32,10 +32,10 @@ impl Patch {
     ///
     /// It makes a copy of the axes, which is usually fine.
     #[staticmethod]
-    pub fn from_axes(axes: &PyList) -> PyResult<Self> {
+    pub fn try_from_axes(axes: &PyList) -> PyResult<Self> {
         let axes: Vec<&super::Axis> = axes.extract()?;
         Ok(Self {
-            inner: crate::Patch::from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
+            inner: crate::Patch::try_from_axes(axes.into_iter().map(|ax| ax.inner.clone()).collect())?,
         })
     }
 
