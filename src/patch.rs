@@ -32,66 +32,45 @@ impl Patch {
     ///
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
-    pub fn new<A, E>(orig_axes: Vec<A>, dense: ArrayD<f32>)
-        -> Fallible<Self>
-        where
-            A: TryInto<Axis, Error=E>,
-            E: Into<StoiError>
-        {
-        // TODO: is there some way we can into() less than three times?
-        let mut axes : Vec<Axis> = vec![];
-        for ax in orig_axes {
-            axes.push(ax.try_into().map_err(|e| e.into())?);
+    pub fn new(axes: Vec<Axis>, content: Option<ArrayD<f32>>) -> Fallible<Self> {
+        match content {
+            None => {
+                // They have not provided content; we must allocate
+                let dims = axes.iter().map(|a| a.len()).collect_vec();
+                if dims.iter().product::<usize>() > 256 << 20 {
+                    return Err(StoiError::TooLarge(
+                        "Patches must be 256 million elements or less (1GB of 32bit floats)",
+                    ));
+                }
+                Ok(Self {
+                    axes,
+                    dense: ArrayD::from_elem(dims, std::f32::NAN)
+                })
+            },
+            Some(dense) => {
+                // They provided some content
+                if axes.len() != dense.ndim() {
+                    return Err(StoiError::InvalidValue(
+                        "The number of labeled axes doesn't match the number of axes in the dense tensor.",
+                    ));
+                }
+                if !axes
+                    .iter()
+                    .zip(dense.axes())
+                    .all(|(ax, d_ax)| ax.len() == d_ax.len())
+                {
+                    return Err(StoiError::InvalidValue(
+                        "The shape of the axis labels doesn't match the shape of the dense tensor.",
+                    ));
+                }
+                Ok(Self { axes, dense })
+            }
         }
-
-        if axes.len() != dense.ndim() {
-            return Err(StoiError::InvalidValue(
-                "The number of labeled axes doesn't match the number of axes in the dense tensor.",
-            ));
-        }
-        if !axes
-            .iter()
-            .zip(dense.axes())
-            .all(|(ax, d_ax)| ax.len() == d_ax.len())
-        {
-            return Err(StoiError::InvalidValue(
-                "The shape of the axis labels doesn't match the shape of the dense tensor.",
-            ));
-        }
-
-        let dims = axes.iter().map(|a| a.len()).collect_vec();
-        if dims.iter().product::<usize>() > 256 << 20 {
-            return Err(StoiError::TooLarge(
-                "Patches must be 256 million elements or less (1GB of 32bit floats)",
-            ));
-        }
-
-        Ok(Self { axes, dense })
     }
 
-    /// Create a new empty patch given some axes
-    /// 
-    /// Cloning axes small enough to be part of a patch is usually cheap, so this
-    /// function uses several clones and conversions to make using it more convenient
-    pub fn try_from_axes<A, E>(orig_axes: Vec<A>)
-        -> Fallible<Self>
-        where
-        A: TryInto<Axis, Error=E>,
-        E: Into<StoiError>
-        {
-        // TODO: is there some way we can into() less than three times?
-        let mut axes : Vec<Axis> = vec![];
-        for ax in orig_axes {
-            axes.push(ax.try_into().map_err(|e| e.into())?);
-        }
-        
-        let dims = axes.iter().map(|a| a.len()).collect_vec();
-        if dims.iter().product::<usize>() > 256 << 20 {
-            return Err(StoiError::TooLarge(
-                "Patches must be 256 million elements or less (1GB of 32bit floats)",
-            ));
-        }
-        Self::new(axes, ArrayD::from_elem(dims, std::f32::NAN))
+    /// Convenience method to create a builder
+    pub fn build() -> PatchBuilder {
+        PatchBuilder::new()
     }
 
     /// How many dimensions in this patch
@@ -389,6 +368,34 @@ impl Patch {
     }
 }
 
+/// Convenience class to build patches with less typing
+pub struct PatchBuilder {
+    axes: Vec<Result<Axis, StoiError>>,
+}
+impl PatchBuilder {
+    /// Create an empty Patch builder
+    pub fn new() -> Self {
+        Self { axes: vec![] }
+    }
+    /// Add an axis to the upcoming Patch
+    pub fn axis(mut self, name: &str, labels: &[Label]) -> Self {
+        self.axes.push(Axis::new(name, labels.to_vec()));
+        self
+    }
+    /// Add a range-based axis to the upcoming Patch
+    pub fn axis_range<R: IntoIterator<Item=Label>>(mut self, name: &str, range: R) -> Self {
+        self.axes.push(Axis::new(name, range.into_iter().collect()));
+        self
+    }
+    /// Give the content and finish
+    pub fn content(self, content: Option<ArrayD<f32>>) -> Fallible<Patch> {
+        Patch::new(
+            self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
+            content
+        )
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::*;
@@ -399,33 +406,42 @@ mod test {
         let item_axis = Axis::new("item", vec![1, 3]).unwrap();
 
         // Set both elements
-        let mut base = Patch::try_from_axes(vec![&item_axis]).unwrap();
-        let revision =
-            Patch::new(vec![item_axis.clone()], nd::arr1(&[100., 300.]).into_dyn()).unwrap();
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[1, 3])
+            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .unwrap();
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
         assert_eq!(modified[[0]], 100.);
         assert_eq!(modified[[1]], 300.);
 
         // Set one but miss the other
-        let mut base = Patch::try_from_axes(vec![&item_axis]).unwrap();
-        let revision = Patch::new(
-            vec![Axis::new("item", vec![1, 2]).unwrap()],
-            nd::arr1(&[100., 300.]).into_dyn(),
-        )
-        .unwrap();
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[1, 2])
+            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .unwrap();
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
         assert_eq!(modified[[0]], 100.);
         assert!(modified[[1]].is_nan());
 
         // Miss both
-        let mut base = Patch::try_from_axes(vec![&item_axis]).unwrap();
-        let revision = Patch::new(
-            vec![("item", vec![10, 30])],
-            nd::arr1(&[100., 300.]).into_dyn(),
-        )
-        .unwrap();
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[30, 10])
+            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .unwrap();
         base.apply(&revision).unwrap();
 
         let modified = base.to_dense();
@@ -433,14 +449,14 @@ mod test {
         assert!(modified[[1]].is_nan());
 
         // Unsorted labels
-        let mut base = Patch::try_from_axes(vec![
-            ("item", vec![30, 10])
-        ]).unwrap();
-        let revision = Patch::new(
-            vec![("item", vec![30, 10])],
-            nd::arr1(&[100., 300.]).into_dyn(),
-        )
-        .unwrap();
+        let mut base = Patch::build()
+            .axis("item", &[30, 10])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[30, 10])
+            .content(Some(nd::arr1(&[100., 300.]).into_dyn()))
+            .unwrap();
         base.apply(&revision).unwrap();
 
         let modified = base.to_dense();
@@ -448,12 +464,14 @@ mod test {
         assert_eq!(modified[[1]], 300.);
 
         // Unsorted, mismatched labels
-        let mut base = Patch::try_from_axes(vec![("item", vec![30, 10])]).unwrap();
-        let revision = Patch::new(
-            vec![("item", vec![10, 30])],
-            nd::arr1(&[300., 100.]).into_dyn(),
-        )
-        .unwrap();
+        let mut base = Patch::build()
+            .axis("item", &[30, 10])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[10, 30])
+            .content(Some(nd::arr1(&[300., 100.]).into_dyn()))
+            .unwrap();
         base.apply(&revision).unwrap();
 
         let modified = base.to_dense();
@@ -463,16 +481,17 @@ mod test {
 
     #[test]
     fn patch_2d_apply() {
-        let item_axis = Axis::new("item", vec![1, 3]).unwrap();
-        let store_axis = Axis::new("store", vec![-1, -3]).unwrap();
-
         // Perfect patch, same order and same overlap
-        let mut base = Patch::try_from_axes(vec![&item_axis, &store_axis]).unwrap();
-        let revision = Patch::new(
-            vec![&item_axis, &store_axis],
-            nd::arr2(&[[100., 200.], [300., 400.]]).into_dyn(),
-        )
-        .unwrap();
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(Some(nd::arr2(&[[100., 200.], [300., 400.]]).into_dyn()))
+            .unwrap();
         base.apply(&revision).unwrap();
         let modified = base.to_dense();
         assert_eq!(modified[[0, 0]], 100.);
