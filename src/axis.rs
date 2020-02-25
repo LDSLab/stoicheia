@@ -119,8 +119,7 @@ impl From<&Axis> for Axis {
     }
 }
 
-
-impl<L: IntoIterator<Item=Label>> TryFrom<(&str, L)> for Axis {
+impl<L: IntoIterator<Item = Label>> TryFrom<(&str, L)> for Axis {
     type Error = StoiError;
     fn try_from(x: (&str, L)) -> Result<Self, StoiError> {
         Axis::new(x.0, x.1.into_iter().collect())

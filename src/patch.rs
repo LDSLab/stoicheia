@@ -1,7 +1,7 @@
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray as nd;
-use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD, ArrayBase};
+use ndarray::{ArrayBase, ArrayD, ArrayViewD, ArrayViewMutD};
 use num_traits::Zero;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -44,9 +44,9 @@ impl Patch {
                 }
                 Ok(Self {
                     axes,
-                    dense: ArrayD::from_elem(dims, std::f32::NAN)
+                    dense: ArrayD::from_elem(dims, std::f32::NAN),
                 })
-            },
+            }
             Some(dense) => {
                 // They provided some content
                 if axes.len() != dense.ndim() {
@@ -166,15 +166,14 @@ impl Patch {
                 *x = *y
             });
 
-            union = Self::shuffle_pull_ndim(
-                union,
-                &label_shuffles[..],
-            );
+            union = Self::shuffle_pull_ndim(union, &label_shuffles[..]);
 
             for (ax_ix, label_shuffle) in label_shuffles.iter().enumerate() {
                 for (self_idx, pat_idx) in label_shuffle.iter().enumerate() {
                     if *pat_idx == std::usize::MAX {
-                        union.index_axis_mut(nd::Axis(ax_ix), self_idx).fill(std::f32::NAN);
+                        union
+                            .index_axis_mut(nd::Axis(ax_ix), self_idx)
+                            .fill(std::f32::NAN);
                     }
                 }
             }
@@ -229,7 +228,10 @@ impl Patch {
         axis: nd::Axis,
         shuffle: &[usize],
     ) {
-        assert_eq!(shuffle.len(), write.len_of(axis));
+        // Note: it's totally OK if some of the patch is not written
+        // I'm not sure what the preference would be if shuffle is larger
+        // so let's just jump out then
+        assert!(shuffle.len() <= write.len_of(axis));
         for write_index in 0..shuffle.len() {
             if shuffle[write_index] != std::usize::MAX {
                 write
@@ -247,10 +249,7 @@ impl Patch {
     /// Use std::usize::MAX to skip a plane
     ///
     /// The results will be in "original" after this function completes
-    fn shuffle_pull_ndim(
-        mut original: ArrayD<f32>,
-        shuffle: &[Vec<usize>],
-    ) -> ArrayD<f32> {
+    fn shuffle_pull_ndim(mut original: ArrayD<f32>, shuffle: &[Vec<usize>]) -> ArrayD<f32> {
         assert_eq!(original.ndim(), shuffle.len());
         let mut scratch = original.clone();
         for ax_ix in 0..original.ndim() {
@@ -383,7 +382,7 @@ impl PatchBuilder {
         self
     }
     /// Add a range-based axis to the upcoming Patch
-    pub fn axis_range<R: IntoIterator<Item=Label>>(mut self, name: &str, range: R) -> Self {
+    pub fn axis_range<R: IntoIterator<Item = Label>>(mut self, name: &str, range: R) -> Self {
         self.axes.push(Axis::new(name, range.into_iter().collect()));
         self
     }
@@ -392,7 +391,7 @@ impl PatchBuilder {
     pub fn content<J: Into<Option<ArrayD<f32>>>>(self, content: J) -> Fallible<Patch> {
         Patch::new(
             self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
-            content.into().map(|c| c.into_dyn())
+            content.into().map(|c| c.into_dyn()),
         )
     }
 
@@ -400,15 +399,18 @@ impl PatchBuilder {
     pub fn content_1d(self, content: &[f32]) -> Fallible<Patch> {
         Patch::new(
             self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
-            Some(nd::arr1(content).into_dyn())
+            Some(nd::arr1(content).into_dyn()),
         )
     }
-    
+
     /// Create a 2d array on the spot, set the content, and return the new patch
-    pub fn content_2d<V: nd::FixedInitializer<Elem=f32> + Clone>(self, content: &[V]) -> Fallible<Patch> {
+    pub fn content_2d<V: nd::FixedInitializer<Elem = f32> + Clone>(
+        self,
+        content: &[V],
+    ) -> Fallible<Patch> {
         Patch::new(
             self.axes.into_iter().collect::<Fallible<Vec<Axis>>>()?,
-            Some(nd::arr2(content).into_dyn())
+            Some(nd::arr2(content).into_dyn()),
         )
     }
 }
@@ -419,14 +421,11 @@ mod test {
     use ndarray as nd;
 
     #[test]
-    fn patch_1d_apply() {
+    fn patch_1d_apply_total_overlap_same_order() {
         let item_axis = Axis::new("item", vec![1, 3]).unwrap();
 
         // Set both elements
-        let mut base = Patch::build()
-            .axis("item", &[1, 3])
-            .content(None)
-            .unwrap();
+        let mut base = Patch::build().axis("item", &[1, 3]).content(None).unwrap();
         let revision = Patch::build()
             .axis("item", &[1, 3])
             .content_1d(&[100., 300.])
@@ -435,12 +434,12 @@ mod test {
         let modified = base.to_dense();
         assert_eq!(modified[[0]], 100.);
         assert_eq!(modified[[1]], 300.);
+    }
 
+    #[test]
+    fn patch_1d_apply_semi_overlap_same_order() {
         // Set one but miss the other
-        let mut base = Patch::build()
-            .axis("item", &[1, 3])
-            .content(None)
-            .unwrap();
+        let mut base = Patch::build().axis("item", &[1, 3]).content(None).unwrap();
         let revision = Patch::build()
             .axis("item", &[1, 2])
             .content_1d(&[100., 300.])
@@ -449,12 +448,12 @@ mod test {
         let modified = base.to_dense();
         assert_eq!(modified[[0]], 100.);
         assert!(modified[[1]].is_nan());
+    }
 
+    #[test]
+    fn patch_1d_apply_no_overlap_different_order() {
         // Miss both
-        let mut base = Patch::build()
-            .axis("item", &[1, 3])
-            .content(None)
-            .unwrap();
+        let mut base = Patch::build().axis("item", &[1, 3]).content(None).unwrap();
         let revision = Patch::build()
             .axis("item", &[30, 10])
             .content_1d(&[100., 300.])
@@ -464,7 +463,10 @@ mod test {
         let modified = base.to_dense();
         assert!(modified[[0]].is_nan());
         assert!(modified[[1]].is_nan());
+    }
 
+    #[test]
+    fn patch_1d_apply_total_overlap_same_order_unsorted() {
         // Unsorted labels
         let mut base = Patch::build()
             .axis("item", &[30, 10])
@@ -479,7 +481,10 @@ mod test {
         let modified = base.to_dense();
         assert_eq!(modified[[0]], 100.);
         assert_eq!(modified[[1]], 300.);
+    }
 
+    #[test]
+    fn patch_1d_apply_total_overlap_different_order() {
         // Unsorted, mismatched labels
         let mut base = Patch::build()
             .axis("item", &[30, 10])
@@ -497,8 +502,8 @@ mod test {
     }
 
     #[test]
-    fn patch_2d_apply() {
-        // Perfect patch, same order and same overlap
+    fn patch_2d_apply_same_size_total_overlap_same_order() {
+        // Perfect patch: (same size) (total overlap) (same order) 
         let mut base = Patch::build()
             .axis("item", &[1, 3])
             .axis("store", &[1, 3])
@@ -515,5 +520,127 @@ mod test {
         assert_eq!(modified[[0, 1]], 200.);
         assert_eq!(modified[[1, 0]], 300.);
         assert_eq!(modified[[1, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_2d_apply_same_size_total_overlap_different_order() {
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[3, 1])
+            .content_2d(&[[200., 100.], [400., 300.]])
+            .unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert_eq!(modified[[0, 0]], 100.);
+        assert_eq!(modified[[0, 1]], 200.);
+        assert_eq!(modified[[1, 0]], 300.);
+        assert_eq!(modified[[1, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_2d_apply_same_size_semi_overlap_same_order() {
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[2, 3])
+            .axis("store", &[1, 3])
+            .content_2d(&[[100., 200.], [300., 400.]])
+            .unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert!(modified[[0, 0]].is_nan());
+        assert!(modified[[0, 1]].is_nan());
+        assert_eq!(modified[[1, 0]], 300.);
+        assert_eq!(modified[[1, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_2d_apply_same_size_semi_overlap_different_order() {
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[2, 3])
+            .axis("store", &[3, 1])
+            .content_2d(&[[200., 100.], [400., 300.]])
+            .unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert!(modified[[0, 0]].is_nan());
+        assert!(modified[[0, 1]].is_nan());
+        assert_eq!(modified[[1, 0]], 300.);
+        assert_eq!(modified[[1, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_2d_apply_same_size_no_overlap() {
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[2, 4])
+            .axis("store", &[3, 1])
+            .content_2d(&[[200., 100.], [400., 300.]])
+            .unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert!(modified[[0, 0]].is_nan());
+        assert!(modified[[0, 1]].is_nan());
+        assert!(modified[[1, 0]].is_nan());
+        assert!(modified[[1, 1]].is_nan());
+    }
+
+    #[test]
+    fn patch_2d_apply_larger_patch_semi_overlap_different_order() {
+        let mut base = Patch::build()
+            .axis("item", &[1, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[0, 2, 3])
+            .axis("store", &[3, 1])
+            .content_2d(&[[200., 100.], [-1., -1.], [400., 300.]])
+            .unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert!(modified[[0, 0]].is_nan());
+        assert!(modified[[0, 1]].is_nan());
+        assert_eq!(modified[[1, 0]], 300.);
+        assert_eq!(modified[[1, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_2d_apply_smaller_patch_semi_overlap_different_order() {
+        let mut base = Patch::build()
+            .axis("item", &[1, 2, 3])
+            .axis("store", &[1, 3])
+            .content(None)
+            .unwrap();
+        let revision = Patch::build()
+            .axis("item", &[0, 3])
+            .axis("store", &[3, 1])
+            .content_2d(&[[200., 100.], [400., 300.]])
+            .unwrap();
+        base.apply(&revision).unwrap();
+        let modified = base.to_dense();
+        assert!(modified[[0, 0]].is_nan());
+        assert!(modified[[0, 1]].is_nan());
+        assert!(modified[[1, 0]].is_nan());
+        assert!(modified[[1, 1]].is_nan());
+        assert_eq!(modified[[2, 0]], 300.);
+        assert_eq!(modified[[2, 1]], 400.);
     }
 }

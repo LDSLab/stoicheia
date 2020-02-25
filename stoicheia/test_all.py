@@ -36,7 +36,7 @@ def test_fetch_empty():
     assert np.array_equal(axes[0], np.array([1]))
     assert np.array_equal(axes[1], np.array([2,3,4]))
     assert np.array_equal(axes[2], np.array([700]))
-    assert np.array_equal(content, np.array([[[0],[0],[0]]]))
+    assert np.all(np.isnan(content))
 
 
 def test_init_an_axis():
