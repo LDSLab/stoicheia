@@ -13,17 +13,17 @@ crate-type = ["cdylib", "lib"]
 rocket = "0.4.2"
 rocket_contrib = "0.4.2"
 serde_json = "1.0.45"
-ndarray = { version= "0.13.0", features = ["serde"] }
+ndarray = {version= "0.13.0", features=["serde"]}
 bincode = "1.2.1"
 serde_derive = "1.0.104"
 serde = "1.0.104"
 itertools = "0.8.2"
-rusqlite = "0.21.0"
+rusqlite = {version="0.21.0", features=["bundled"]}
 rand = "0.7.3"
 thiserror = "1.0.10"
 
-pyo3 = {version = "0.8.5", features=["extension-module"], optional = true}
-numpy = {version= "0.7.0", optional=true}
+pyo3 = {version="0.8.5", features=["extension-module"], optional=true}
+numpy = {version="0.7.0", optional=true}
 num-traits = "0.2.11"
 chrono = "0.4.10"
 

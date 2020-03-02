@@ -1,0 +1,8 @@
+.vscode/
+.pytest_cache/
+.benchmarks/
+target/
+*.so
+*.dylib
+*.pyc
+__pycache__

@@ -1,0 +1,8 @@
+# Part of the stoicheia Python bindings - uses Maturin to build the wheels
+[build-system]
+requires = ["maturin"]
+build-backend = "maturin"
+
+[tool.maturin]
+# Always use the python feature when building python bindings - duh
+cargo-extra-args="--features python"
