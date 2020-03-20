@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS Quilt(
 -- Later see if an r-tree actually changes performance
 CREATE TABLE IF NOT EXISTS Patch (
     patch_id INTEGER PRIMARY KEY,
-    comm_id  INTEGER NOT NULL REFERENCES Comm(comm_id),
+    comm_id  INTEGER NOT NULL REFERENCES Comm(comm_id) DEFERRABLE INITIALLY DEFERRED,
     dim_0_min, dim_0_max,
     dim_1_min, dim_1_max,
     dim_2_min, dim_2_max,
@@ -27,14 +27,14 @@ CREATE TABLE IF NOT EXISTS AxisContent(
 
 CREATE TABLE IF NOT EXISTS Comm(
     comm_id        INTEGER PRIMARY KEY,
-    parent_comm_id INTEGER                         REFERENCES Comm(comm_id),
+    parent_comm_id INTEGER                         REFERENCES Comm(comm_id) DEFERRABLE INITIALLY DEFERRED,
     message TEXT
 );
 
 CREATE TABLE IF NOT EXISTS Tag(
-    quilt_name TEXT COLLATE NOCASE REFERENCES Quilt(quilt_name),
+    quilt_name TEXT COLLATE NOCASE REFERENCES Quilt(quilt_name) DEFERRABLE INITIALLY DEFERRED,
     tag_name   TEXT COLLATE NOCASE,
-    comm_id INTEGER NOT NULL REFERENCES Comm(comm_id),
+    comm_id INTEGER NOT NULL REFERENCES Comm(comm_id) DEFERRABLE INITIALLY DEFERRED,
 
     PRIMARY KEY (quilt_name, tag_name)
 ) WITHOUT ROWID;

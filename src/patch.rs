@@ -1,10 +1,10 @@
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray as nd;
-use ndarray::{ArrayBase, ArrayD, ArrayViewD, ArrayViewMutD};
+use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use num_traits::Zero;
 use std::collections::HashMap;
-use std::convert::TryInto;
+use std::io::{Read, Write};
 
 /// A tensor with labeled axes
 ///
@@ -365,7 +365,80 @@ impl Patch {
     pub fn axes(&self) -> &[Axis] {
         &self.axes
     }
+
+    /// Serialize a patch the default way
+    /// 
+    /// It's still possible to serialize a patch with serde, but this is the
+    /// recommended method if you don't have reason to do otherwise, to avoid
+    /// needless incompatibilities
+    pub fn serialize_into<W: Write>(&self, mut buffer: &mut W) -> Fallible<()> {
+        let options = PatchTag {
+            magic: 0x494f5453, // "STOI"
+            version: 1,
+            compression: PatchCompressionType::Brotli,
+            filters: vec![]
+        };
+        bincode::serialize_into(&mut buffer, &options)?;
+
+        let mut brotli_writer = brotli::CompressorWriter::new(
+            &mut buffer,
+            4096, /* Buffer size */
+            1, /* Quality: 0-9 */
+            20 /* Log2 buffer size */
+        );
+
+        bincode::serialize_into(&mut brotli_writer, &self)?;
+        Ok(())
+    }
+
+    /// Serialize the default way, into a fresh new Vec
+    /// 
+    /// While this method is convenient, patches are usually pretty large, so
+    /// try to use serialize_into and reuse buffers where possible.
+    pub fn serialize(&self) -> Fallible<Vec<u8>> {
+        let mut buffer = vec![0u8; 0];
+        self.serialize_into(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    /// Deserialize a patch the default way
+    /// 
+    /// It's still possible to deserialize a patch with serde, but this is the
+    /// recommended method if you don't have reason to do otherwise, to avoid
+    /// needless incompatibilities.
+    pub fn deserialize_from<R: Read>(mut buffer: R) -> Fallible<Self> {
+        let options : PatchTag = bincode::deserialize_from(buffer.by_ref())?;
+
+        match options.compression {
+            PatchCompressionType::Off => {
+                Ok(bincode::deserialize_from(buffer)?)
+            },
+            PatchCompressionType::Brotli => {
+                let brotli_reader = brotli::Decompressor::new(buffer, 4096);
+                Ok(bincode::deserialize_from(brotli_reader)?)
+            }
+        }
+    }
 }
+
+/// An uncompressed prelude to Patch, to allow versions and serialization options
+#[derive(Serialize, Deserialize, Debug)]
+struct PatchTag {
+    magic: u32,
+    version: u8,
+    compression: PatchCompressionType,
+    filters: Vec<PatchFilter>
+}
+/// Part of PatchTag, used for deserializing patches
+#[derive(Serialize, Deserialize, Debug)]
+enum PatchCompressionType {
+    Off,
+    Brotli
+}
+/// Things you might have done to the patch to try to save space
+/// There aren't any yet but it could happen and this lets us be compatible
+#[derive(Serialize, Deserialize, Debug)]
+enum PatchFilter {}
 
 /// Convenience class to build patches with less typing
 pub struct PatchBuilder {
@@ -642,5 +715,21 @@ mod test {
         assert!(modified[[1, 1]].is_nan());
         assert_eq!(modified[[2, 0]], 300.);
         assert_eq!(modified[[2, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_serialize_round_trip() {
+        let pat1 = Patch::build()
+            .axis("item", &[0, 3])
+            .axis("store", &[3, 1])
+            .content_2d(&[[200., 100.], [400., 300.]])
+            .unwrap();
+        
+        let mut buffer = vec![0u8; 0];
+        pat1.serialize_into(&mut buffer).unwrap();
+        // serialize() and serialize_into() should be the same
+        assert_eq!(buffer, pat1.serialize().unwrap());
+        let pat2 = Patch::deserialize_from(&buffer[..]).unwrap();
+        assert_eq!(pat1, pat2);
     }
 }

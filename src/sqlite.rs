@@ -11,13 +11,17 @@ pub(crate) struct SQLiteConnection {
     conn: Mutex<rusqlite::Connection>,
 }
 impl SQLiteConnection {
-    /// Create a shared in-memory SQLite database
+    /// Create an in-memory SQLite database.
+    /// 
+    /// Each connection creates a new database.
     pub fn connect_in_memory() -> Fallible<Arc<Self>> {
-        //Self::connect("file::memory:?cache=shared".into())
         Self::connect(":memory:".into())
     }
 
-    /// Connect to the underlying SQLite database
+    /// Connect to an SQLite database
+    /// 
+    /// SQLite treats the path ":memory:" as special and will only create an in-memory database
+    /// in that case. See SQLite documentation for more details
     pub fn connect(base: PathBuf) -> Fallible<Arc<Self>> {
         let mut conn = rusqlite::Connection::open(base)?;
         {
@@ -34,6 +38,9 @@ impl SQLiteConnection {
 
 impl<'t> StorageConnection for &'t SQLiteConnection {
     type Transaction = SQLiteTransaction<'t>;
+    /// Create a new storage transaction on the database
+    /// 
+    /// Most operations can only be done in a transaction, for correctness.
     fn txn(self) -> Fallible<SQLiteTransaction<'t>> {
         for i in 0..10 {
             if let Ok(txn) = self.conn.try_lock() {
@@ -86,7 +93,7 @@ impl<'t> SQLiteTransaction<'t> {
         // TODO: If this serialize fails it will deadlock the connection by not rolling back
         self.txn.execute(
             "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
-            &[&patch_id as &dyn ToSql, &bincode::serialize(&pat)?],
+            &[&patch_id as &dyn ToSql, &pat.serialize()?],
         )?;
         Ok(patch_id)
     }
