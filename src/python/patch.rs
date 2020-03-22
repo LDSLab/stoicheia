@@ -35,10 +35,7 @@ impl Patch {
     pub fn try_from_axes(axes: &PyList) -> PyResult<Self> {
         let axes: Vec<&super::Axis> = axes.extract()?;
         Ok(Self {
-            inner: crate::Patch::new(
-                axes.into_iter().map(|ax| ax.inner.clone()).collect(),
-                None
-            )?,
+            inner: crate::Patch::new(axes.into_iter().map(|ax| ax.inner.clone()).collect(), None)?,
         })
     }
 

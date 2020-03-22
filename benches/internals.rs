@@ -1,7 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand;
 use stoicheia::*;
-#[macro_use] extern crate lazy_static;
+#[macro_use]
+extern crate lazy_static;
 
 lazy_static! {
     static ref EMPTY_4MB_PATCH: Patch = Patch::build()
@@ -23,8 +24,8 @@ fn empty_content(_size: usize) -> Option<ndarray::ArrayD<f32>> {
 /// Create a new random matrix. Used for abstracting over array content
 fn random_content(size: usize) -> Option<ndarray::ArrayD<f32>> {
     Some(ndarray::ArrayD::from_shape_fn(
-        vec![ size as usize, size as usize ],
-        |_| rand::random::<f32>()
+        vec![size as usize, size as usize],
+        |_| rand::random::<f32>(),
     ))
 }
 
@@ -83,34 +84,40 @@ pub fn bench_patch(c: &mut Criterion) {
         // Two different ways to make the data
         for (content_name, content_factory) in &[
             ("empty", &empty_content as &dyn Fn(usize) -> _),
-            ("random", &random_content)] {
-
+            ("random", &random_content),
+        ] {
             // Three different sizes
             for &size in &[250, 500, 1000] {
                 // Serialize
-                group.throughput(criterion::Throughput::Bytes(size*size*4));
-                group.sample_size(10).bench_function(format!("Patch::serialize {} {}x{}", content_name, size, size), |b| {
-                    let patch = Patch::build()
-                        .axis_range("dim0", 1000..1000+size as i64)
-                        .axis_range("dim1", 0..size as i64)
-                        .content(content_factory(size as usize))
-                        .unwrap();
-    
-                    b.iter(|| black_box(&patch).serialize(None).unwrap() )
-                });
+                group.throughput(criterion::Throughput::Bytes(size * size * 4));
+                group.sample_size(10).bench_function(
+                    format!("Patch::serialize {} {}x{}", content_name, size, size),
+                    |b| {
+                        let patch = Patch::build()
+                            .axis_range("dim0", 1000..1000 + size as i64)
+                            .axis_range("dim1", 0..size as i64)
+                            .content(content_factory(size as usize))
+                            .unwrap();
+
+                        b.iter(|| black_box(&patch).serialize(None).unwrap())
+                    },
+                );
 
                 // Deserialize
-                group.sample_size(10).bench_function(format!("Patch::deserialize {} {}x{}", content_name, size, size), |b| {
-                    let patch_bytes = Patch::build()
-                        .axis_range("dim0", 1000..1000+size as i64)
-                        .axis_range("dim1", 0..size as i64)
-                        .content(content_factory(size as usize))
-                        .unwrap()
-                        .serialize(None)
-                        .unwrap();
-    
-                    b.iter(|| Patch::deserialize_from(black_box(&patch_bytes[..])).unwrap() )
-                });
+                group.sample_size(10).bench_function(
+                    format!("Patch::deserialize {} {}x{}", content_name, size, size),
+                    |b| {
+                        let patch_bytes = Patch::build()
+                            .axis_range("dim0", 1000..1000 + size as i64)
+                            .axis_range("dim1", 0..size as i64)
+                            .content(content_factory(size as usize))
+                            .unwrap()
+                            .serialize(None)
+                            .unwrap();
+
+                        b.iter(|| Patch::deserialize_from(black_box(&patch_bytes[..])).unwrap())
+                    },
+                );
             }
         }
     }
@@ -131,12 +138,18 @@ pub fn bench_commit(c: &mut Criterion) {
     // Two different ways to make the data
     for (content_name, content_factory) in &[
         ("empty", &empty_content as &dyn Fn(usize) -> _),
-        ("random", &random_content)] {
+        ("random", &random_content),
+    ] {
         for &rewrites in &[1, 4, 16] {
-            let name = format!("Catalog::commit 4MB {} total rewrite repeat-{}", content_name, rewrites);
+            let name = format!(
+                "Catalog::commit 4MB {} total rewrite repeat-{}",
+                content_name, rewrites
+            );
             group.sample_size(10).bench_function(name, |b| {
                 let catalog = Catalog::connect("").unwrap();
-                catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();
+                catalog
+                    .create_quilt("quilt", &["dim0", "dim1"], true)
+                    .unwrap();
                 let patch = Patch::build()
                     .axis_range("dim0", 1500..2500)
                     .axis_range("dim1", 0..1000)
@@ -144,36 +157,63 @@ pub fn bench_commit(c: &mut Criterion) {
                     .unwrap();
                 b.iter(|| {
                     for _ in 0..rewrites {
-                        catalog.commit("quilt", "latest", "latest", "message", vec![black_box(&patch)]).unwrap()
+                        catalog
+                            .commit(
+                                "quilt",
+                                "latest",
+                                "latest",
+                                "message",
+                                vec![black_box(&patch)],
+                            )
+                            .unwrap()
                     }
                 })
             });
 
-            let name = format!("Catalog::fetch 4MB read {} total rewrite {}-patch commit", content_name, rewrites);
+            let name = format!(
+                "Catalog::fetch 4MB read {} total rewrite {}-patch commit",
+                content_name, rewrites
+            );
             group.sample_size(10).bench_function(name, |b| {
                 let catalog = Catalog::connect("").unwrap();
-                catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();
+                catalog
+                    .create_quilt("quilt", &["dim0", "dim1"], true)
+                    .unwrap();
                 let patch = Patch::build()
                     .axis_range("dim0", 1500..2500)
                     .axis_range("dim1", 0..1000)
                     .content(content_factory(1000))
                     .unwrap();
                 for _ in 0..rewrites {
-                    catalog.commit("quilt", "latest", "latest", "message", vec![black_box(&patch)]).unwrap()
+                    catalog
+                        .commit(
+                            "quilt",
+                            "latest",
+                            "latest",
+                            "message",
+                            vec![black_box(&patch)],
+                        )
+                        .unwrap()
                 }
                 b.iter(|| {
-                    catalog.fetch("quilt", "latest", vec![
-                        AxisSelection::RangeInclusive{
-                            name: "dim0".into(),
-                            start: 1500,
-                            end: 2499
-                        },
-                        AxisSelection::RangeInclusive{
-                            name: "dim1".into(),
-                            start: 0,
-                            end: 999
-                        }
-                    ]).unwrap()
+                    catalog
+                        .fetch(
+                            "quilt",
+                            "latest",
+                            vec![
+                                AxisSelection::RangeInclusive {
+                                    name: "dim0".into(),
+                                    start: 1500,
+                                    end: 2499,
+                                },
+                                AxisSelection::RangeInclusive {
+                                    name: "dim1".into(),
+                                    start: 0,
+                                    end: 999,
+                                },
+                            ],
+                        )
+                        .unwrap()
                 })
             });
         }

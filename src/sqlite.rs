@@ -1,11 +1,11 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
 use crate::{Axis, BoundingBox, Fallible, Patch, PatchID, QuiltDetails, StoiError};
+use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use itertools::Itertools;
 
 /// An implementation of tensor storage on SQLite
 pub(crate) struct SQLiteConnection {
@@ -13,14 +13,14 @@ pub(crate) struct SQLiteConnection {
 }
 impl SQLiteConnection {
     /// Create an in-memory SQLite database.
-    /// 
+    ///
     /// Each connection creates a new database.
     pub fn connect_in_memory() -> Fallible<Arc<Self>> {
         Self::connect(":memory:".into())
     }
 
     /// Connect to an SQLite database
-    /// 
+    ///
     /// SQLite treats the path ":memory:" as special and will only create an in-memory database
     /// in that case. See SQLite documentation for more details
     pub fn connect(base: PathBuf) -> Fallible<Arc<Self>> {
@@ -40,7 +40,7 @@ impl SQLiteConnection {
 impl<'t> StorageConnection for &'t SQLiteConnection {
     type Transaction = SQLiteTransaction<'t>;
     /// Create a new storage transaction on the database
-    /// 
+    ///
     /// Most operations can only be done in a transaction, for correctness.
     fn txn(self) -> Fallible<SQLiteTransaction<'t>> {
         for i in 0..10 {
@@ -244,25 +244,23 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 &[
                     &quilt_name as &dyn ToSql,
                     &tag,
-                    &serde_json::to_string(&bounding_boxes
-                        .iter()
-                        .map(|bx| (0..4)
-                            .into_iter()
-                            .map(|ax_ix| bx.get(ax_ix).copied().unwrap_or((0, 1<<30)))
-                            .collect_vec()
-                        )
-                        .map(|bx| [
-                            bx[0].0,
-                            bx[0].1,
-                            bx[1].0,
-                            bx[1].1,
-                            bx[2].0,
-                            bx[2].1,
-                            bx[3].0,
-                            bx[3].1,
-                        ])
-                        .collect_vec()
-                    )?
+                    &serde_json::to_string(
+                        &bounding_boxes
+                            .iter()
+                            .map(|bx| {
+                                (0..4)
+                                    .into_iter()
+                                    .map(|ax_ix| bx.get(ax_ix).copied().unwrap_or((0, 1 << 30)))
+                                    .collect_vec()
+                            })
+                            .map(|bx| {
+                                [
+                                    bx[0].0, bx[0].1, bx[1].0, bx[1].1, bx[2].0, bx[2].1, bx[3].0,
+                                    bx[3].1,
+                                ]
+                            })
+                            .collect_vec(),
+                    )?,
                 ],
                 |r| r.get(1),
             )?
@@ -283,6 +281,12 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     // put_patch is part of Self, not Storage because you can only do it using put_commit()
 
+    /// Push a commit to the database, balancing as necessary
+    ///
+    /// The heuristic used for balancing may change in the future, but this release works like so:
+    ///
+    ///     - Take patches from this commit that overlap this patch
+    ///     - Fetch the area corresponding to the smallest one
     fn put_commit(
         &self,
         quilt_name: &str,

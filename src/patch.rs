@@ -3,9 +3,9 @@ use itertools::Itertools;
 use ndarray as nd;
 use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use num_traits::Zero;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::borrow::Cow;
 
 /// A tensor with labeled axes
 ///
@@ -266,7 +266,7 @@ impl Patch {
     }
 
     /// Merge two patches together into a larger patch
-    /// 
+    ///
     /// This is actually pretty simple, it works by creating a new Patch and applying
     /// all of the patches to it.
     pub fn merge(operands: &[&Patch]) -> Fallible<Patch> {
@@ -279,7 +279,12 @@ impl Patch {
         // There must have been a first one and it must have had axes
         let mut axes = operands[0].axes().iter().cloned().collect_vec();
         for operand in &operands[1..] {
-            if !operand.axes().iter().map(|ax| &ax.name).eq(axes.iter().map(|ax| &ax.name)) {
+            if !operand
+                .axes()
+                .iter()
+                .map(|ax| &ax.name)
+                .eq(axes.iter().map(|ax| &ax.name))
+            {
                 return Err(StoiError::InvalidValue(
                     "Unmatched axes. All operands of Patch::merge() must have the same axis names in the same order.",
                 ));
@@ -322,17 +327,16 @@ impl Patch {
     pub fn compact(&self) -> Cow<Self> {
         // This is a ragged matrix, not a tensor
         // It's (ndim, len-of-that-dim), and represents if we are going to keep that slice
-        let keep_indices = (0..self.ndim()).map(|ax_ix| {
-            self.dense
-                .axis_iter(nd::Axis(ax_ix))
-                .map(|plane| plane.fold(
-                    false,
-                    |acc, x| acc || !x.is_nan()
-                ))
-                .enumerate()
-                .filter_map(|(i, a)| if a { Some(i) } else { None })
-                .collect_vec()
-        }).collect_vec();
+        let keep_indices = (0..self.ndim())
+            .map(|ax_ix| {
+                self.dense
+                    .axis_iter(nd::Axis(ax_ix))
+                    .map(|plane| plane.fold(false, |acc, x| acc || !x.is_nan()))
+                    .enumerate()
+                    .filter_map(|(i, a)| if a { Some(i) } else { None })
+                    .collect_vec()
+            })
+            .collect_vec();
 
         // The total number of elements in the new patch
         let mut keep_lens: Vec<(usize, usize)> = keep_indices
@@ -340,7 +344,7 @@ impl Patch {
             .map(|indices| indices.len())
             .enumerate()
             .collect();
-        let total_new_elements: f32  = keep_indices
+        let total_new_elements: f32 = keep_indices
             .iter()
             .map(|indices| indices.len() as f32)
             .product();
@@ -350,20 +354,24 @@ impl Patch {
             // Remove the most selective axes first
             keep_lens.sort_unstable_by_key(|&(ax_ix, ct)| ct / self.dense.len_of(nd::Axis(ax_ix)));
             let mut dense = Cow::Borrowed(&self.dense);
-            let new_axes = self.axes.iter().enumerate().map(|(ax_ix, axis)| {
-                // Delete elements
-                dense = Cow::Owned(dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]));
+            let new_axes = self
+                .axes
+                .iter()
+                .enumerate()
+                .map(|(ax_ix, axis)| {
+                    // Delete elements
+                    dense = Cow::Owned(dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]));
 
-                // Delete labels
-                Axis::new_unchecked(
-                    &axis.name,
-                    keep_indices[ax_ix]
-                        .iter()
-                        .map(|&i| axis.labels()[i])
-                        .collect(),
-                )
-            })
-            .collect_vec();
+                    // Delete labels
+                    Axis::new_unchecked(
+                        &axis.name,
+                        keep_indices[ax_ix]
+                            .iter()
+                            .map(|&i| axis.labels()[i])
+                            .collect(),
+                    )
+                })
+                .collect_vec();
             Cow::Owned(Patch::new(new_axes, Some(dense.into_owned())).unwrap())
         } else {
             Cow::Borrowed(self)
@@ -391,17 +399,21 @@ impl Patch {
     }
 
     /// Serialize a patch the default way
-    /// 
+    ///
     /// It's still possible to serialize a patch with serde, but this is the
     /// recommended method if you don't have reason to do otherwise, to avoid
     /// needless incompatibilities
-    pub fn serialize_into<W: Write>(&self, compression: Option<PatchCompressionType>, mut buffer: &mut W) -> Fallible<()> {
+    pub fn serialize_into<W: Write>(
+        &self,
+        compression: Option<PatchCompressionType>,
+        mut buffer: &mut W,
+    ) -> Fallible<()> {
         let compression = compression.unwrap_or(PatchCompressionType::Off);
         let options = PatchTag {
             magic: 0x494f5453, // "STOI"
             version: 1,
             compression,
-            filters: vec![]
+            filters: vec![],
         };
         bincode::serialize_into(&mut buffer, &options)?;
 
@@ -409,23 +421,23 @@ impl Patch {
             PatchCompressionType::Off => {
                 bincode::serialize_into(&mut buffer, &self)?;
                 Ok(())
-            },
-            PatchCompressionType::Brotli{quality} => {
+            }
+            PatchCompressionType::Brotli { quality } => {
                 let mut brotli_writer = brotli::CompressorWriter::new(
                     &mut buffer,
-                    4096, /* Buffer size */
+                    4096,    /* Buffer size */
                     quality, /* Quality: 0-9 */
-                    20 /* Log2 buffer size */
+                    20,      /* Log2 buffer size */
                 );
-        
+
                 bincode::serialize_into(&mut brotli_writer, &self)?;
                 Ok(())
-            },
+            }
         }
     }
 
     /// Serialize the default way, into a fresh new Vec
-    /// 
+    ///
     /// While this method is convenient, patches are usually pretty large, so
     /// try to use serialize_into and reuse buffers where possible.
     pub fn serialize(&self, compression: Option<PatchCompressionType>) -> Fallible<Vec<u8>> {
@@ -436,18 +448,16 @@ impl Patch {
     }
 
     /// Deserialize a patch the default way
-    /// 
+    ///
     /// It's still possible to deserialize a patch with serde, but this is the
     /// recommended method if you don't have reason to do otherwise, to avoid
     /// needless incompatibilities.
     pub fn deserialize_from<R: Read>(mut buffer: R) -> Fallible<Self> {
-        let options : PatchTag = bincode::deserialize_from(buffer.by_ref())?;
+        let options: PatchTag = bincode::deserialize_from(buffer.by_ref())?;
 
         match options.compression {
-            PatchCompressionType::Off => {
-                Ok(bincode::deserialize_from(buffer)?)
-            },
-            PatchCompressionType::Brotli{quality:_} => {
+            PatchCompressionType::Off => Ok(bincode::deserialize_from(buffer)?),
+            PatchCompressionType::Brotli { quality: _ } => {
                 let brotli_reader = brotli::Decompressor::new(buffer, 4096);
                 Ok(bincode::deserialize_from(brotli_reader)?)
             }
@@ -461,13 +471,13 @@ struct PatchTag {
     magic: u32,
     version: u8,
     compression: PatchCompressionType,
-    filters: Vec<PatchFilter>
+    filters: Vec<PatchFilter>,
 }
 /// Part of PatchTag, used for deserializing patches
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum PatchCompressionType {
     Off,
-    Brotli{quality: u32}
+    Brotli { quality: u32 },
 }
 /// Things you might have done to the patch to try to save space
 /// There aren't any yet but it could happen and this lets us be compatible
@@ -608,7 +618,7 @@ mod test {
 
     #[test]
     fn patch_2d_apply_same_size_total_overlap_same_order() {
-        // Perfect patch: (same size) (total overlap) (same order) 
+        // Perfect patch: (same size) (total overlap) (same order)
         let mut base = Patch::build()
             .axis("item", &[1, 3])
             .axis("store", &[1, 3])
@@ -754,18 +764,12 @@ mod test {
         let pat1 = Patch::build()
             .axis_range("x", 0..2)
             .axis_range("y", 0..2)
-            .content_2d(&[
-                [std::f32::NAN, 2.],
-                [3., std::f32::NAN],
-            ])
+            .content_2d(&[[std::f32::NAN, 2.], [3., std::f32::NAN]])
             .unwrap();
         let pat2 = Patch::build()
             .axis_range("x", 0..2)
             .axis_range("y", 0..2)
-            .content_2d(&[
-                [1., std::f32::NAN],
-                [std::f32::NAN, 4.],
-            ])
+            .content_2d(&[[1., std::f32::NAN], [std::f32::NAN, 4.]])
             .unwrap();
         let m = Patch::merge(&[&pat1, &pat2]).unwrap().to_dense();
         assert_eq!(m[[0, 0]], 1.);
@@ -781,7 +785,7 @@ mod test {
             .axis("store", &[3, 1])
             .content_2d(&[[200., 100.], [400., 300.]])
             .unwrap();
-        
+
         let mut buffer = vec![0u8; 0];
         pat1.serialize_into(None, &mut buffer).unwrap();
         // serialize() and serialize_into() should be the same

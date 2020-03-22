@@ -101,8 +101,8 @@ impl Catalog {
     /// - You can request any slice, and it will be assembled from the underlying commits.
     ///   - How many patches it's assembled from depends on the storage order
     ///     (which is the order the labels are specified in the axis, not in your request)
-    /// - You can request elements you haven't initialized yet, and you'll get zeros.
-    /// - You may only request patches up to 1 GB, as a safety valve
+    /// - You can request elements you haven't initialized yet, and you'll get NANs.
+    /// - You can only request patches up to 1 GB, as a safety valve
     pub fn fetch(&self, quilt_name: &str, tag: &str, mut request: PatchRequest) -> Fallible<Patch> {
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
@@ -124,8 +124,6 @@ impl Catalog {
 
         // They can't possibly use more than ten axes - just a safety measure.
         request.truncate(10);
-
-        // Small note: we limit the axes here just as a safety measure
         for sel in request {
             let (axis, segments) = txn.get_axis_from_selection(sel)?;
             axes.push(axis);
@@ -245,13 +243,7 @@ impl Catalog {
             }
         }
 
-        txn.put_commit(
-            quilt_name,
-            parent_tag,
-            new_tag,
-            message,
-            patches,
-        )?;
+        txn.put_commit(quilt_name, parent_tag, new_tag, message, patches)?;
 
         txn.finish()?;
         Ok(())
