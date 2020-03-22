@@ -149,7 +149,7 @@ pub fn bench_commit(c: &mut Criterion) {
                 })
             });
 
-            let name = format!("Catalog::commit 4MB read {} total rewrite {}-patch commit", content_name, rewrites);
+            let name = format!("Catalog::fetch 4MB read {} total rewrite {}-patch commit", content_name, rewrites);
             group.sample_size(10).bench_function(name, |b| {
                 let catalog = Catalog::connect("").unwrap();
                 catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();

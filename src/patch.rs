@@ -265,6 +265,36 @@ impl Patch {
         original
     }
 
+    /// Merge two patches together into a larger patch
+    /// 
+    /// This is actually pretty simple, it works by creating a new Patch and applying
+    /// all of the patches to it.
+    pub fn merge(operands: &[&Patch]) -> Fallible<Patch> {
+        if operands.is_empty() {
+            return Err(StoiError::InvalidValue(
+                "Empty merge. There is no identity for patches because it's not clear what the axes would be.",
+            ));
+        }
+
+        // There must have been a first one and it must have had axes
+        let mut axes = operands[0].axes().iter().cloned().collect_vec();
+        for operand in &operands[1..] {
+            if !operand.axes().iter().map(|ax| &ax.name).eq(axes.iter().map(|ax| &ax.name)) {
+                return Err(StoiError::InvalidValue(
+                    "Unmatched axes. All operands of Patch::merge() must have the same axis names in the same order.",
+                ));
+            }
+            for (ax_ix, axis) in operand.axes().into_iter().enumerate() {
+                axes[ax_ix].union(&axis); // In-place
+            }
+        }
+        let mut target = Patch::new(axes, None)?;
+        for operand in operands {
+            target.apply(operand)?;
+        }
+        Ok(target)
+    }
+
     /// Possibly compact the patch, removing unused labels
     ///
     /// You can compact a source patch but not a target patch for an apply().
@@ -284,10 +314,8 @@ impl Patch {
     ///         [ 0, 0, 0]
     ///     ]).into_dyn()).unwrap();
     ///
-    ///     p.compact();
-    ///
     ///     assert_eq!(
-    ///         p.to_dense(),
+    ///         p.compact().to_dense(),
     ///         arr2(&[
     ///             [3, 5]
     ///         ]).into_dyn());
@@ -321,7 +349,6 @@ impl Patch {
         if total_new_elements < self.dense.len() as f32 * 0.75 {
             // Remove the most selective axes first
             keep_lens.sort_unstable_by_key(|&(ax_ix, ct)| ct / self.dense.len_of(nd::Axis(ax_ix)));
-            // TODO: Possibly unnecessary clone
             let mut dense = Cow::Borrowed(&self.dense);
             let new_axes = self.axes.iter().enumerate().map(|(ax_ix, axis)| {
                 // Delete elements
@@ -720,6 +747,31 @@ mod test {
         assert!(modified[[1, 1]].is_nan());
         assert_eq!(modified[[2, 0]], 300.);
         assert_eq!(modified[[2, 1]], 400.);
+    }
+
+    #[test]
+    fn patch_2d_merge() {
+        let pat1 = Patch::build()
+            .axis_range("x", 0..2)
+            .axis_range("y", 0..2)
+            .content_2d(&[
+                [std::f32::NAN, 2.],
+                [3., std::f32::NAN],
+            ])
+            .unwrap();
+        let pat2 = Patch::build()
+            .axis_range("x", 0..2)
+            .axis_range("y", 0..2)
+            .content_2d(&[
+                [1., std::f32::NAN],
+                [std::f32::NAN, 4.],
+            ])
+            .unwrap();
+        let m = Patch::merge(&[&pat1, &pat2]).unwrap().to_dense();
+        assert_eq!(m[[0, 0]], 1.);
+        assert_eq!(m[[0, 1]], 2.);
+        assert_eq!(m[[1, 0]], 3.);
+        assert_eq!(m[[1, 1]], 4.);
     }
 
     #[test]

@@ -303,7 +303,7 @@ pub(crate) trait StorageTransaction {
         quilt_name: &str,
         tag: &str,
         bounds: &[BoundingBox],
-    ) -> Fallible<Box<dyn Iterator<Item = PatchID>>>;
+    ) -> Fallible<Vec<PatchID>>;
 
     /// Get a single patch by ID
     fn get_patch(&self, id: PatchID) -> Fallible<Patch>;
