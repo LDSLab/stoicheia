@@ -151,19 +151,18 @@ impl Catalog {
     ///```
     pub fn commit(
         &self,
-        quilt_name: String,
+        quilt_name: &str,
         parent_tag: Option<&str>,
         new_tag: Option<&str>,
-        message: String,
+        message: &str,
         patches: Vec<&crate::python::Patch>,
     ) -> PyResult<()> {
         self.inner.commit(
             &quilt_name,
-            parent_tag,
-            new_tag,
+            parent_tag.unwrap_or("latest"),
+            new_tag.unwrap_or("latest"),
             &message,
-            // TODO: Try to eliminate this copy
-            patches.into_iter().map(|p| p.inner.clone()).collect(),
+            patches.iter().map(|p| &p.inner).collect(),
         )?;
         Ok(())
     }

@@ -158,7 +158,7 @@ impl Catalog {
 
         // If there are more than 1000 bounding boxes, collapse them, to protect the R*tree (or whatever index) from DOS
         let total_bounding_boxes: usize = segments_by_axis.iter().map(|s| s.len()).product();
-        let bounding_boxes = if total_bounding_boxes <= 1000 {
+        let bounding_boxes = if total_bounding_boxes > 1000 {
             vec![segments_by_axis
                 .iter()
                 .map(|_| (0, std::usize::MAX))
@@ -205,10 +205,10 @@ impl Catalog {
     pub fn commit(
         &self,
         quilt_name: &str,
-        parent_tag: Option<&str>,
-        new_tag: Option<&str>,
+        parent_tag: &str,
+        new_tag: &str,
         message: &str,
-        patches: Vec<Patch>,
+        patches: Vec<&Patch>,
     ) -> Fallible<()> {
         // TODO: Implement split/balance...
         // TODO: Think about axis versioning - maybe not a good idea anyway?
@@ -247,8 +247,8 @@ impl Catalog {
 
         txn.put_commit(
             quilt_name,
-            parent_tag.unwrap_or("latest"),
-            new_tag.unwrap_or("latest"),
+            parent_tag,
+            new_tag,
             message,
             patches,
         )?;
@@ -327,7 +327,7 @@ pub(crate) trait StorageTransaction {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<Patch>,
+        patches: Vec<&Patch>,
     ) -> Fallible<()>;
 
     /// Finish and commit the transaction successfully

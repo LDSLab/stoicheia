@@ -61,12 +61,8 @@ pub(crate) struct SQLiteTransaction<'t> {
 }
 impl<'t> SQLiteTransaction<'t> {
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
-    fn put_patch(&self, comm_id: i64, pat: Patch) -> Fallible<PatchID> {
+    fn put_patch(&self, comm_id: i64, pat: &Patch) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
-        println!(
-            "Putting patch {:?} in commit {}, with content {:?}",
-            patch_id, comm_id, pat
-        );
         self.txn.execute(
             "INSERT OR REPLACE INTO Patch(
                 patch_id,
@@ -93,7 +89,7 @@ impl<'t> SQLiteTransaction<'t> {
         // TODO: If this serialize fails it will deadlock the connection by not rolling back
         self.txn.execute(
             "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
-            &[&patch_id as &dyn ToSql, &pat.serialize()?],
+            &[&patch_id as &dyn ToSql, &pat.compact().serialize(None)?],
         )?;
         Ok(patch_id)
     }
@@ -269,8 +265,6 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         {
             patch_ids.push(patch_id?);
         }
-
-        println!("Patch IDs {:?}", patch_ids);
         Ok(Box::new(patch_ids.into_iter()))
     }
 
@@ -280,7 +274,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
             &[&id],
             |r| r.get(0),
         )?;
-        Ok(bincode::deserialize(&res[..])?)
+        Ok(Patch::deserialize_from(&res[..])?)
     }
 
     // put_patch is part of Self, not Storage because you can only do it using put_commit()
@@ -291,7 +285,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<Patch>,
+        patches: Vec<&Patch>,
     ) -> Fallible<()> {
         let comm_id: i64 = self.gen_id();
         for pat in patches {

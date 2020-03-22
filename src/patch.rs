@@ -5,6 +5,7 @@ use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use num_traits::Zero;
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::borrow::Cow;
 
 /// A tensor with labeled axes
 ///
@@ -290,7 +291,7 @@ impl Patch {
     ///         arr2(&[
     ///             [3, 5]
     ///         ]).into_dyn());
-    pub fn compact(&mut self) {
+    pub fn compact(&self) -> Cow<Self> {
         // TODO: Profile if it's better to do one complex pass or multiple simple ones
 
         // This is a ragged matrix, not a tensor
@@ -305,7 +306,7 @@ impl Patch {
         // Scan the tensor to check if it's empty
         for (point, value) in self.dense.indexed_iter() {
             for ax_ix in 0..self.ndim() {
-                keep[ax_ix][point[ax_ix]] |= !value.is_zero();
+                keep[ax_ix][point[ax_ix]] |= !value.is_nan();
             }
         }
 
@@ -330,19 +331,26 @@ impl Patch {
         if total_new_elements / 3 >= self.dense.len() / 4 {
             // Remove the most selective axes first
             keep_lens.sort_unstable_by_key(|&(ax_ix, ct)| ct / self.dense.len_of(nd::Axis(ax_ix)));
-            for (ax_ix, _count) in keep_lens {
+            // TODO: Possibly unnecessary clone
+            let mut dense = self.to_dense();
+            let new_axes = self.axes.iter().enumerate().map(|(ax_ix, axis)| {
+                // Delete elements
+                dense = dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]);
+
                 // Delete labels
-                self.axes[ax_ix] = Axis::new_unchecked(
-                    &self.axes[ax_ix].name,
+                Axis::new_unchecked(
+                    &axis.name,
                     keep_indices[ax_ix]
                         .iter()
-                        .map(|&i| self.axes[ax_ix].labels()[i])
+                        .map(|&i| axis.labels()[i])
                         .collect(),
-                );
-
-                // Delete elements
-                self.dense = self.dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]);
-            }
+                )
+            })
+            .collect_vec();
+            // TODO: remove unnecessary sort check
+            Cow::Owned(Patch::new(new_axes, Some(dense)).unwrap())
+        } else {
+            Cow::Borrowed(self)
         }
     }
 
@@ -371,33 +379,43 @@ impl Patch {
     /// It's still possible to serialize a patch with serde, but this is the
     /// recommended method if you don't have reason to do otherwise, to avoid
     /// needless incompatibilities
-    pub fn serialize_into<W: Write>(&self, mut buffer: &mut W) -> Fallible<()> {
+    pub fn serialize_into<W: Write>(&self, compression: Option<PatchCompressionType>, mut buffer: &mut W) -> Fallible<()> {
+        let compression = compression.unwrap_or(PatchCompressionType::Off);
         let options = PatchTag {
             magic: 0x494f5453, // "STOI"
             version: 1,
-            compression: PatchCompressionType::Brotli,
+            compression,
             filters: vec![]
         };
         bincode::serialize_into(&mut buffer, &options)?;
 
-        let mut brotli_writer = brotli::CompressorWriter::new(
-            &mut buffer,
-            4096, /* Buffer size */
-            1, /* Quality: 0-9 */
-            20 /* Log2 buffer size */
-        );
-
-        bincode::serialize_into(&mut brotli_writer, &self)?;
-        Ok(())
+        match options.compression {
+            PatchCompressionType::Off => {
+                bincode::serialize_into(&mut buffer, &self)?;
+                Ok(())
+            },
+            PatchCompressionType::Brotli{quality} => {
+                let mut brotli_writer = brotli::CompressorWriter::new(
+                    &mut buffer,
+                    4096, /* Buffer size */
+                    quality, /* Quality: 0-9 */
+                    20 /* Log2 buffer size */
+                );
+        
+                bincode::serialize_into(&mut brotli_writer, &self)?;
+                Ok(())
+            },
+        }
     }
 
     /// Serialize the default way, into a fresh new Vec
     /// 
     /// While this method is convenient, patches are usually pretty large, so
     /// try to use serialize_into and reuse buffers where possible.
-    pub fn serialize(&self) -> Fallible<Vec<u8>> {
+    pub fn serialize(&self, compression: Option<PatchCompressionType>) -> Fallible<Vec<u8>> {
         let mut buffer = vec![0u8; 0];
-        self.serialize_into(&mut buffer)?;
+        buffer.reserve(self.dense.len() * 5); // Save time allocating
+        self.serialize_into(compression, &mut buffer)?;
         Ok(buffer)
     }
 
@@ -413,7 +431,7 @@ impl Patch {
             PatchCompressionType::Off => {
                 Ok(bincode::deserialize_from(buffer)?)
             },
-            PatchCompressionType::Brotli => {
+            PatchCompressionType::Brotli{quality:_} => {
                 let brotli_reader = brotli::Decompressor::new(buffer, 4096);
                 Ok(bincode::deserialize_from(brotli_reader)?)
             }
@@ -422,7 +440,7 @@ impl Patch {
 }
 
 /// An uncompressed prelude to Patch, to allow versions and serialization options
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct PatchTag {
     magic: u32,
     version: u8,
@@ -430,14 +448,14 @@ struct PatchTag {
     filters: Vec<PatchFilter>
 }
 /// Part of PatchTag, used for deserializing patches
-#[derive(Serialize, Deserialize, Debug)]
-enum PatchCompressionType {
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum PatchCompressionType {
     Off,
-    Brotli
+    Brotli{quality: u32}
 }
 /// Things you might have done to the patch to try to save space
 /// There aren't any yet but it could happen and this lets us be compatible
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 enum PatchFilter {}
 
 /// Convenience class to build patches with less typing
@@ -495,8 +513,6 @@ mod test {
 
     #[test]
     fn patch_1d_apply_total_overlap_same_order() {
-        let item_axis = Axis::new("item", vec![1, 3]).unwrap();
-
         // Set both elements
         let mut base = Patch::build().axis("item", &[1, 3]).content(None).unwrap();
         let revision = Patch::build()
@@ -726,9 +742,9 @@ mod test {
             .unwrap();
         
         let mut buffer = vec![0u8; 0];
-        pat1.serialize_into(&mut buffer).unwrap();
+        pat1.serialize_into(None, &mut buffer).unwrap();
         // serialize() and serialize_into() should be the same
-        assert_eq!(buffer, pat1.serialize().unwrap());
+        assert_eq!(buffer, pat1.serialize(None).unwrap());
         let pat2 = Patch::deserialize_from(&buffer[..]).unwrap();
         assert_eq!(pat1, pat2);
     }

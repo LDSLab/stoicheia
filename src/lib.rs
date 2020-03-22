@@ -69,10 +69,11 @@ pub enum AxisSelection {
     },
 }
 
-/// Selection by axis indicess, similar to .iloc[] in Pandas
+/// Selection by axis indices, similar to .iloc[] in Pandas
 pub(crate) type AxisSegment = (usize, usize);
 
 /// An N-dimensional box referencing a contiguous region of multiple axes.
 ///
-/// Remember that in these boxes, storage indices (usize) are always consecutive, but labels (i64) may not be.
+/// Remember that in these boxes, storage indices (usize) are always consecutive,
+/// but labels (i64) may not be.
 pub(crate) type BoundingBox = Vec<AxisSegment>;

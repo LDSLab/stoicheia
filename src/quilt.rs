@@ -53,12 +53,12 @@ impl<'t> Quilt<'t> {
         &self,
         new_tag: Option<&str>,
         message: &str,
-        patches: Vec<Patch>,
+        patches: Vec<&Patch>,
     ) -> Fallible<()> {
         self.catalog.commit(
             &self.name,
-            Some(&self.tag),
-            Some(new_tag.unwrap_or(&self.tag)),
+            &self.tag,
+            new_tag.unwrap_or(&self.tag),
             message,
             patches,
         )

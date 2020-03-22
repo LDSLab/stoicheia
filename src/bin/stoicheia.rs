@@ -74,10 +74,10 @@ fn apply_patch(catalog: State<Arc<Catalog>>, commit: Json<WebCommit>) -> Fallibl
     let commit = commit.into_inner();
     catalog.commit(
         &commit.quilt_name,
-        Some(&commit.parent_tag),
-        Some(&commit.new_tag),
+        &commit.parent_tag,
+        &commit.new_tag,
         &commit.message,
-        commit.patches,
+        commit.patches.iter().collect(), // send references not objects
     )?;
     Ok(())
 }
