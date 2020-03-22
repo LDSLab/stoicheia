@@ -16,6 +16,18 @@ fn new_axis(labels: &[i64]) -> Axis {
     Axis::new("item", labels.to_owned()).unwrap()
 }
 
+/// No-content matrix. Used for abstracting over array content
+fn empty_content(_size: usize) -> Option<ndarray::ArrayD<f32>> {
+    None
+}
+/// Create a new random matrix. Used for abstracting over array content
+fn random_content(size: usize) -> Option<ndarray::ArrayD<f32>> {
+    Some(ndarray::ArrayD::from_shape_fn(
+        vec![ size as usize, size as usize ],
+        |_| rand::random::<f32>()
+    ))
+}
+
 pub fn bench_axis(c: &mut Criterion) {
     let labels: Vec<i64> = (0..100000).collect();
     c.bench_function("Axis::new ordered clone", |b| {
@@ -68,11 +80,6 @@ pub fn bench_patch(c: &mut Criterion) {
         // because the compression and compaction can be slow
         let mut group = c.benchmark_group("Patch::serialize");
 
-        let empty_content = |_| None;
-        let random_content = |size| Some(ndarray::ArrayD::from_shape_fn(
-            vec![ size as usize, size as usize ],
-            |_| rand::random::<f32>()
-        ));
         // Two different ways to make the data
         for (content_name, content_factory) in &[
             ("empty", &empty_content as &dyn Fn(usize) -> _),
@@ -121,53 +128,56 @@ pub fn bench_patch(c: &mut Criterion) {
 
 pub fn bench_commit(c: &mut Criterion) {
     let mut group = c.benchmark_group("Catalog::commit");
+    // Two different ways to make the data
+    for (content_name, content_factory) in &[
+        ("empty", &empty_content as &dyn Fn(usize) -> _),
+        ("random", &random_content)] {
+        for &rewrites in &[1, 4, 16] {
+            let name = format!("Catalog::commit 4MB {} total rewrite repeat-{}", content_name, rewrites);
+            group.sample_size(10).bench_function(name, |b| {
+                let catalog = Catalog::connect("").unwrap();
+                catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();
+                let patch = Patch::build()
+                    .axis_range("dim0", 1500..2500)
+                    .axis_range("dim1", 0..1000)
+                    .content(content_factory(1000))
+                    .unwrap();
+                b.iter(|| {
+                    for _ in 0..rewrites {
+                        catalog.commit("quilt", "latest", "latest", "message", vec![black_box(&patch)]).unwrap()
+                    }
+                })
+            });
 
-    for &rewrites in &[1, 4, 16] {
-        let name = format!("Catalog::commit 4MB empty total rewrite repeat-{}", rewrites);
-        group.sample_size(10).bench_function(name, |b| {
-            let catalog = Catalog::connect("").unwrap();
-            catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();
-            let patch = Patch::build()
-                .axis_range("dim0", 1500..2500)
-                .axis_range("dim1", 0..1000)
-                .content(None)
-                .unwrap();
-            b.iter(|| {
+            let name = format!("Catalog::commit 4MB read {} total rewrite {}-patch commit", content_name, rewrites);
+            group.sample_size(10).bench_function(name, |b| {
+                let catalog = Catalog::connect("").unwrap();
+                catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();
+                let patch = Patch::build()
+                    .axis_range("dim0", 1500..2500)
+                    .axis_range("dim1", 0..1000)
+                    .content(content_factory(1000))
+                    .unwrap();
                 for _ in 0..rewrites {
                     catalog.commit("quilt", "latest", "latest", "message", vec![black_box(&patch)]).unwrap()
                 }
-            })
-        });
-
-        let name = format!("Catalog::commit 4MB read empty total rewrite {}-patch commit", rewrites);
-        group.sample_size(10).bench_function(name, |b| {
-            let catalog = Catalog::connect("").unwrap();
-            catalog.create_quilt("quilt", &["dim0", "dim1"], true).unwrap();
-            let patch = Patch::build()
-                .axis_range("dim0", 1500..2500)
-                .axis_range("dim1", 0..1000)
-                .content(None)
-                .unwrap();
-            for _ in 0..rewrites {
-                catalog.commit("quilt", "latest", "latest", "message", vec![black_box(&patch)]).unwrap()
-            }
-            b.iter(|| {
-                catalog.fetch("quilt", "latest", vec![
-                    AxisSelection::RangeInclusive{
-                        name: "dim0".into(),
-                        start: 1500,
-                        end: 2499
-                    },
-                    AxisSelection::RangeInclusive{
-                        name: "dim1".into(),
-                        start: 0,
-                        end: 999
-                    }
-                ]).unwrap()
-            })
-        });
+                b.iter(|| {
+                    catalog.fetch("quilt", "latest", vec![
+                        AxisSelection::RangeInclusive{
+                            name: "dim0".into(),
+                            start: 1500,
+                            end: 2499
+                        },
+                        AxisSelection::RangeInclusive{
+                            name: "dim1".into(),
+                            start: 0,
+                            end: 999
+                        }
+                    ]).unwrap()
+                })
+            });
+        }
     }
-    
 }
 criterion_group!(benches, bench_axis, bench_patch, bench_commit);
 criterion_main!(benches);

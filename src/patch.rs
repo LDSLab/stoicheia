@@ -292,50 +292,40 @@ impl Patch {
     ///             [3, 5]
     ///         ]).into_dyn());
     pub fn compact(&self) -> Cow<Self> {
-        // TODO: Profile if it's better to do one complex pass or multiple simple ones
-
         // This is a ragged matrix, not a tensor
         // It's (ndim, len-of-that-dim), and represents if we are going to keep that slice
-        let mut keep: Vec<Vec<bool>> = self
-            .dense
-            .shape()
-            .iter()
-            .map(|&len| vec![false; len])
-            .collect();
+        let keep_indices = (0..self.ndim()).map(|ax_ix| {
+            self.dense
+                .axis_iter(nd::Axis(ax_ix))
+                .map(|plane| plane.fold(
+                    false,
+                    |acc, x| acc || !x.is_nan()
+                ))
+                .enumerate()
+                .filter_map(|(i, a)| if a { Some(i) } else { None })
+                .collect_vec()
+        }).collect_vec();
 
-        // Scan the tensor to check if it's empty
-        for (point, value) in self.dense.indexed_iter() {
-            for ax_ix in 0..self.ndim() {
-                keep[ax_ix][point[ax_ix]] |= !value.is_nan();
-            }
-        }
-
-        let keep_indices: Vec<Vec<usize>> = keep
-            .iter()
-            .map(|v| {
-                v.iter()
-                    .enumerate()
-                    .filter_map(|(i, &k)| if k { Some(i) } else { None })
-                    .collect_vec()
-            })
-            .collect();
         // The total number of elements in the new patch
         let mut keep_lens: Vec<(usize, usize)> = keep_indices
             .iter()
             .map(|indices| indices.len())
             .enumerate()
             .collect();
-        let total_new_elements: usize = keep.iter().map(|indices| indices.len()).product();
+        let total_new_elements: f32  = keep_indices
+            .iter()
+            .map(|indices| indices.len() as f32)
+            .product();
 
         // If the juice is worth the squeeze
-        if total_new_elements / 3 >= self.dense.len() / 4 {
+        if total_new_elements < self.dense.len() as f32 * 0.75 {
             // Remove the most selective axes first
             keep_lens.sort_unstable_by_key(|&(ax_ix, ct)| ct / self.dense.len_of(nd::Axis(ax_ix)));
             // TODO: Possibly unnecessary clone
-            let mut dense = self.to_dense();
+            let mut dense = Cow::Borrowed(&self.dense);
             let new_axes = self.axes.iter().enumerate().map(|(ax_ix, axis)| {
                 // Delete elements
-                dense = dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]);
+                dense = Cow::Owned(dense.select(nd::Axis(ax_ix), &keep_indices[ax_ix]));
 
                 // Delete labels
                 Axis::new_unchecked(
@@ -347,8 +337,7 @@ impl Patch {
                 )
             })
             .collect_vec();
-            // TODO: remove unnecessary sort check
-            Cow::Owned(Patch::new(new_axes, Some(dense)).unwrap())
+            Cow::Owned(Patch::new(new_axes, Some(dense.into_owned())).unwrap())
         } else {
             Cow::Borrowed(self)
         }
