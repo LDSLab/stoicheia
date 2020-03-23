@@ -3,9 +3,10 @@ use crate::Fallible;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::convert::TryInto;
 
 use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRequest, Quilt,
+    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRef, PatchRequest, Quilt,
     QuiltDetails, StoiError,
 };
 
@@ -103,90 +104,8 @@ impl Catalog {
     ///     (which is the order the labels are specified in the axis, not in your request)
     /// - You can request elements you haven't initialized yet, and you'll get NANs.
     /// - You can only request patches up to 1 GB, as a safety valve
-    pub fn fetch(&self, quilt_name: &str, tag: &str, mut request: PatchRequest) -> Fallible<Patch> {
-        if request.is_empty() {
-            return Err(StoiError::InvalidValue(
-                "Patches must have at least one axis",
-            ));
-        }
-
-        // All of this needs to be done in one transaction
-        let mut txn = self.storage.txn()?;
-
-        //
-        // Find all the labels of the axes they are planning to use
-        //
-
-        // Names and all labels of all of the axes involved
-        let mut axes = vec![];
-        // Segments of each axis, which will be the edges of bounding boxes
-        let mut segments_by_axis = vec![];
-
-        // They can't possibly use more than ten axes - just a safety measure.
-        request.truncate(10);
-        for sel in request {
-            let (axis, segments) = txn.get_axis_from_selection(sel)?;
-            axes.push(axis);
-            segments_by_axis.push(segments);
-        }
-
-        // Tack on any axes they forgot
-        for axis_name in txn.get_quilt_details(quilt_name)?.axes {
-            if axes.iter().find(|a| a.name == axis_name).is_none() {
-                let (axis, segments) =
-                    txn.get_axis_from_selection(AxisSelection::All { name: axis_name })?;
-                axes.push(axis);
-                segments_by_axis.push(segments);
-            }
-        }
-
-        // At this point we know how big the output will be.
-        // The error here is early to avoid the IO
-        // and we don't construct the patch (which would have noticed and raised the same error)
-        // in order to avoid holding memory longer
-        if axes.iter().map(|a| a.len()).product::<usize>() > 256 << 20 {
-            return Err(StoiError::TooLarge(
-                "Patches must be 256 million elements or less (1GB of 32bit floats)",
-            ));
-        }
-
-        //
-        // Find all bounding boxes we need to get the cartesian product of all the axis segments
-        //
-
-        // If there are more than 1000 bounding boxes, collapse them, to protect the R*tree (or whatever index) from DOS
-        let total_bounding_boxes: usize = segments_by_axis.iter().map(|s| s.len()).product();
-        let bounding_boxes = if total_bounding_boxes > 1000 {
-            vec![segments_by_axis
-                .iter()
-                .map(|_| (0, std::usize::MAX))
-                .collect()]
-        } else {
-            segments_by_axis
-                .iter()
-                .multi_cartesian_product()
-                .map(|segments_group| segments_group.into_iter().cloned().collect())
-                .collect()
-        };
-
-        //
-        // Find the patches we need to fill all the bounding boxes
-        //
-
-        let patch_ids = txn.get_patches_by_bounding_boxes(&quilt_name, &tag, &bounding_boxes)?;
-
-        //
-        // Download and apply all the patches
-        //
-
-        // TODO: This should definitely be async or at least concurrent
-        let mut target_patch = Patch::new(axes, None)?;
-        for patch_id in patch_ids {
-            let source_patch = txn.get_patch(patch_id)?;
-            target_patch.apply(&source_patch)?;
-        }
-
-        Ok(target_patch)
+    pub fn fetch(&self, quilt_name: &str, tag: &str, request: PatchRequest) -> Fallible<Patch> {
+        self.storage.txn()?.fetch(quilt_name, tag, request)
     }
 
     /// Commit a patch to a quilt.
@@ -294,8 +213,9 @@ pub(crate) trait StorageTransaction {
         &self,
         quilt_name: &str,
         tag: &str,
+        deep: bool,
         bounds: &[BoundingBox],
-    ) -> Fallible<Vec<PatchID>>;
+    ) -> Fallible<Vec<PatchRef>>;
 
     /// Get the bounding box of a patch
     /// 
@@ -320,7 +240,7 @@ pub(crate) trait StorageTransaction {
     /// This is only available together, so that the underlying storage media can do this
     /// atomically without a complicated API
     fn put_commit(
-        &self,
+        &mut self,
         quilt_name: &str,
         parent_tag: &str,
         new_tag: &str,
@@ -392,6 +312,99 @@ pub(crate) trait StorageTransaction {
             self.put_axis(&existing_axis)?;
         }
         Ok(mutated)
+    }
+
+    /// Fetch a patch from a quilt.
+    ///
+    /// - You can request any slice, and it will be assembled from the underlying commits.
+    ///   - How many patches it's assembled from depends on the storage order
+    ///     (which is the order the labels are specified in the axis, not in your request)
+    /// - You can request elements you haven't initialized yet, and you'll get NANs.
+    /// - You can only request patches up to 1 GB, as a safety valve
+    fn fetch(&mut self, quilt_name: &str, tag: &str, mut request: PatchRequest) -> Fallible<Patch> {
+        if request.is_empty() {
+            return Err(StoiError::InvalidValue(
+                "Patches must have at least one axis",
+            ));
+        }
+
+        //
+        // Find all the labels of the axes they are planning to use
+        //
+
+        // Names and all labels of all of the axes involved
+        let mut axes = vec![];
+        // Segments of each axis, which will be the edges of bounding boxes
+        let mut segments_by_axis = vec![];
+
+        // They can't possibly use more than ten axes - just a safety measure.
+        request.truncate(10);
+        for sel in request {
+            let (axis, segments) = self.get_axis_from_selection(sel)?;
+            axes.push(axis);
+            segments_by_axis.push(segments);
+        }
+
+        // Tack on any axes they forgot
+        for axis_name in self.get_quilt_details(quilt_name)?.axes {
+            if axes.iter().find(|a| a.name == axis_name).is_none() {
+                let (axis, segments) =
+                    self.get_axis_from_selection(AxisSelection::All { name: axis_name })?;
+                axes.push(axis);
+                segments_by_axis.push(segments);
+            }
+        }
+
+        // At this point we know how big the output will be.
+        // The error here is early to avoid the IO
+        // and we don't construct the patch (which would have noticed and raised the same error)
+        // in order to avoid holding memory longer
+        if axes.iter().map(|a| a.len()).product::<usize>() > 256 << 20 {
+            return Err(StoiError::TooLarge(
+                "Patches must be 256 million elements or less (1GB of 32bit floats)",
+            ));
+        }
+
+        //
+        // Find all bounding boxes we need to get the cartesian product of all the axis segments
+        //
+
+        // If there are more than 1000 bounding boxes, collapse them, to protect the R*tree (or whatever index) from DOS
+        let total_bounding_boxes: usize = segments_by_axis.iter().map(|s| s.len()).product();
+        let bounding_boxes = if total_bounding_boxes > 1000 {
+            let bbox: BoundingBox = segments_by_axis
+                .iter()
+                .map(|_| (0usize, 1usize<<60))
+                .collect_vec()[..]
+                .try_into()?;
+            vec![bbox]
+        } else {
+            segments_by_axis
+            .iter()
+            .multi_cartesian_product()
+            // TODO: This looks like suspiciously much type conversion
+            .map(|segments_group| Ok(segments_group.into_iter().cloned().collect_vec()[..].try_into()?))
+            .collect::<Fallible<Vec<BoundingBox>>>()?
+        };
+
+        //
+        // Find the patches we need to fill all the bounding boxes
+        //
+
+        let patch_refs = self.get_patches_by_bounding_boxes(&quilt_name, &tag, true, &bounding_boxes)?;
+
+        //
+        // Download and apply all the patches
+        //
+
+        // TODO: This should definitely be async or at least concurrent
+        let mut target_patch = Patch::new(axes, None)?;
+        for patch_ref in patch_refs {
+            let source_patch = self.get_patch(patch_ref.id)?;
+            target_patch.apply(&source_patch)?;
+        }
+
+        Ok(target_patch)
     }
 }
 

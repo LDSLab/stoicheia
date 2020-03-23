@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS Quilt(
 CREATE TABLE IF NOT EXISTS Patch (
     patch_id INTEGER PRIMARY KEY,
     comm_id  INTEGER NOT NULL REFERENCES Comm(comm_id) DEFERRABLE INITIALLY DEFERRED,
+    decompressed_size INTEGER NOT NULL,
     dim_0_min, dim_0_max,
     dim_1_min, dim_1_max,
     dim_2_min, dim_2_max,

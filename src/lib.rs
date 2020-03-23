@@ -33,6 +33,15 @@ pub mod python;
 /// this, patches may cluster meaningless groups of points.
 pub type Label = i64;
 
+/// Patch details, everything you can get without loading the content
+/// 
+/// These are used for compaction and balancing
+pub struct PatchRef {
+    id: PatchID,
+    bounding_box: BoundingBox,
+    decompressed_size: u64,
+}
+
 /// The database ID of a patch.
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy, Debug)]
 pub struct PatchID(i64);
@@ -72,8 +81,8 @@ pub enum AxisSelection {
 /// Selection by axis indices, similar to .iloc[] in Pandas
 pub(crate) type AxisSegment = (usize, usize);
 
-/// An N-dimensional box referencing a contiguous region of multiple axes.
+/// A 4-dimensional box referencing a contiguous region of multiple axes.
 ///
 /// Remember that in these boxes, storage indices (usize) are always consecutive,
 /// but labels (i64) may not be.
-pub(crate) type BoundingBox = Vec<AxisSegment>;
+pub(crate) type BoundingBox = [AxisSegment; 4];

@@ -2,7 +2,6 @@ use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray as nd;
 use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
-use num_traits::Zero;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -26,6 +25,7 @@ pub struct Patch {
     axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
     dense: ArrayD<f32>,
+    // TODO: Consider putting bounding boxes into Patch
 }
 
 impl Patch {
@@ -396,6 +396,11 @@ impl Patch {
     /// Get a shared reference to the axes within
     pub fn axes(&self) -> &[Axis] {
         &self.axes
+    }
+
+    /// Get the total number of elements
+    pub fn len(&self) -> usize {
+        self.dense.len()
     }
 
     /// Serialize a patch the default way
