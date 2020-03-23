@@ -279,9 +279,9 @@ mod tests {
                 .header(ContentType::JSON)
                 .body(
                     r#"[
-                        {"type": "RangeInclusive", "name": "item", "start": -4, "end": -4},
-                        {"type": "RangeInclusive", "name": "store", "start": 3, "end": 3},
-                        {"type": "RangeInclusive", "name": "day", "start": 12, "end": 12}
+                        {"type": "LabelSlice", "name": "item", "start": -4, "end": -4},
+                        {"type": "LabelSlice", "name": "store", "start": 3, "end": 3},
+                        {"type": "LabelSlice", "name": "day", "start": 12, "end": 12}
                     ]"#,
                 )
                 .dispatch();

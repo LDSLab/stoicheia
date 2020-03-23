@@ -254,15 +254,14 @@ pub(crate) trait StorageTransaction {
     /// Use the actual axis values to resolve a request into specific labels
     ///
     /// This is necessary because we need to turn the axis labels into storage indices for range queries
-    fn get_axis_from_selection(&mut self, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
+    fn get_axis_from_selection(&mut self, name: &str, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
         Ok(match sel {
-            AxisSelection::All { name } => {
-                // TODO: Look at Cow instead of clone
+            AxisSelection::All => {
                 let axis = self.get_axis(&name)?;
                 let full_range = (0, axis.len());
                 (axis.clone(), vec![full_range])
             }
-            AxisSelection::Labels { name, labels } => {
+            AxisSelection::Labels(labels) => {
                 // TODO: Profile this - it could be a performance issue
                 let axis = self.get_axis(&name)?;
                 let labelset = axis.labelset();
@@ -277,7 +276,7 @@ pub(crate) trait StorageTransaction {
                     .unwrap_or(0);
                 (Axis::new(name, labels)?, vec![(start_ix, end_ix)])
             }
-            AxisSelection::RangeInclusive { name, start, end } => {
+            AxisSelection::LabelSlice(start, end) => {
                 // Axis labels are not guaranteed to be sorted because it may be optimized for storage, not lookup
                 let axis = self.get_axis(&name)?;
                 let lab = axis.labels();
@@ -291,6 +290,14 @@ pub(crate) trait StorageTransaction {
                         .iter()
                         .position(|&x| x == end)
                         .unwrap_or(axis.len() - start_ix);
+                (
+                    Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
+                    vec![(start_ix, end_ix)],
+                )
+            },
+            AxisSelection::StorageSlice(start_ix, end_ix) => {
+                let axis = self.get_axis(&name)?;
+                let lab = axis.labels();
                 (
                     Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
                     vec![(start_ix, end_ix)],
@@ -331,6 +338,7 @@ pub(crate) trait StorageTransaction {
         //
         // Find all the labels of the axes they are planning to use
         //
+        let quilt_details = self.get_quilt_details(quilt_name)?;
 
         // Names and all labels of all of the axes involved
         let mut axes = vec![];
@@ -338,21 +346,14 @@ pub(crate) trait StorageTransaction {
         let mut segments_by_axis = vec![];
 
         // They can't possibly use more than ten axes - just a safety measure.
-        request.truncate(10);
-        for sel in request {
-            let (axis, segments) = self.get_axis_from_selection(sel)?;
+        request.reverse(); // So we can iterate it and take ownership
+        for axis_name in &quilt_details.axes {
+            let (axis, segments) = match request.pop() {
+                Some(sel) => self.get_axis_from_selection(axis_name, sel)?,
+                None => self.get_axis_from_selection(axis_name, AxisSelection::All)?
+            };
             axes.push(axis);
             segments_by_axis.push(segments);
-        }
-
-        // Tack on any axes they forgot
-        for axis_name in self.get_quilt_details(quilt_name)?.axes {
-            if axes.iter().find(|a| a.name == axis_name).is_none() {
-                let (axis, segments) =
-                    self.get_axis_from_selection(AxisSelection::All { name: axis_name })?;
-                axes.push(axis);
-                segments_by_axis.push(segments);
-            }
         }
 
         // At this point we know how big the output will be.
@@ -372,19 +373,23 @@ pub(crate) trait StorageTransaction {
         // If there are more than 1000 bounding boxes, collapse them, to protect the R*tree (or whatever index) from DOS
         let total_bounding_boxes: usize = segments_by_axis.iter().map(|s| s.len()).product();
         let bounding_boxes = if total_bounding_boxes > 1000 {
-            let bbox: BoundingBox = segments_by_axis
-                .iter()
-                .map(|_| (0usize, 1usize<<60))
-                .collect_vec()[..]
-                .try_into()?;
-            vec![bbox]
+            vec![[
+                (0usize, 1usize<<60),
+                (0usize, 1usize<<60),
+                (0usize, 1usize<<60),
+                (0usize, 1usize<<60),
+            ]]
         } else {
             segments_by_axis
             .iter()
             .multi_cartesian_product()
-            // TODO: This looks like suspiciously much type conversion
-            .map(|segments_group| Ok(segments_group.into_iter().cloned().collect_vec()[..].try_into()?))
-            .collect::<Fallible<Vec<BoundingBox>>>()?
+            .map(|segments_group| [
+                **segments_group.get(0).unwrap_or(&&(0usize, 1usize<<60)),
+                **segments_group.get(1).unwrap_or(&&(0usize, 1usize<<60)),
+                **segments_group.get(2).unwrap_or(&&(0usize, 1usize<<60)),
+                **segments_group.get(3).unwrap_or(&&(0usize, 1usize<<60)),
+            ])
+            .collect::<Vec<BoundingBox>>()
         };
 
         //
@@ -479,11 +484,8 @@ mod tests {
                 "sales",
                 "latest",
                 vec![
-                    AxisSelection::All { name: "itm".into() },
-                    AxisSelection::Labels {
-                        name: "lct".into(),
-                        labels: vec![1],
-                    },
+                    AxisSelection::All,
+                    AxisSelection::Labels(vec![1]),
                 ],
             )
             .unwrap();

@@ -62,20 +62,12 @@ pub type PatchRequest = Vec<AxisSelection>;
 
 /// Selection by axis labels, similar to .loc[] in Pandas
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-#[serde(tag = "type")]
+//#[serde(tag = "type")]
 pub enum AxisSelection {
-    All {
-        name: String,
-    },
-    RangeInclusive {
-        name: String,
-        start: Label,
-        end: Label,
-    },
-    Labels {
-        name: String,
-        labels: Vec<Label>,
-    },
+    All,
+    LabelSlice(Label, Label),
+    Labels(Vec<Label>),
+    StorageSlice(usize, usize),
 }
 
 /// Selection by axis indices, similar to .iloc[] in Pandas

@@ -106,7 +106,7 @@ impl Catalog {
                         labels: selection,
                     });
                 } else if let Ok(selection) = v.extract::<(i64, i64)>() {
-                    axes_selections.push(crate::AxisSelection::RangeInclusive {
+                    axes_selections.push(crate::AxisSelection::LabelSlice {
                         name: axis_name,
                         start: selection.0,
                         end: selection.1,

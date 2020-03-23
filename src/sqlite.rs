@@ -75,7 +75,7 @@ impl<'t> SQLiteTransaction<'t> {
                 dim_1_min, dim_1_max,
                 dim_2_min, dim_2_max,
                 dim_3_min, dim_3_max
-            ) VALUES (?,?,?,?,?,?,?,?,?,?);",
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?);",
             &[
                 &patch_id as &dyn ToSql,
                 &comm_id,
@@ -378,7 +378,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
             // Find the visible area, not the original. If it was occluded by another (larger?) patch
             // in between, we need to include that occlusion in the new patch because it's what you
             // would have seen if you had fetch()ed
-            // let friend_visible_area = 
+            //let friend_visible_area = self.fetch(quilt_name, new_tag)
             self.put_patch(comm_id, pat, new_bounding_box)?;
         }
         self.txn.execute(

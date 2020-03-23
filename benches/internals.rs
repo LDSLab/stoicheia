@@ -201,16 +201,8 @@ pub fn bench_commit(c: &mut Criterion) {
                             "quilt",
                             "latest",
                             vec![
-                                AxisSelection::RangeInclusive {
-                                    name: "dim0".into(),
-                                    start: 1500,
-                                    end: 2499,
-                                },
-                                AxisSelection::RangeInclusive {
-                                    name: "dim1".into(),
-                                    start: 0,
-                                    end: 999,
-                                },
+                                AxisSelection::LabelSlice(1500, 2499),
+                                AxisSelection::LabelSlice(0, 999),
                             ],
                         )
                         .unwrap()
