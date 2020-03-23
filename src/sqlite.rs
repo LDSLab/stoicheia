@@ -1,8 +1,8 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
-use crate::{Axis, BoundingBox, Fallible, Patch, PatchID, QuiltDetails, StoiError};
+use crate::{Axis, BoundingBox, Fallible, Label, Patch, PatchID, QuiltDetails, StoiError};
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -46,7 +46,7 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
         for i in 0..10 {
             if let Ok(txn) = self.conn.try_lock() {
                 txn.execute_batch("BEGIN;")?;
-                return Ok(SQLiteTransaction { txn });
+                return Ok(SQLiteTransaction { txn, axis_cache: HashMap::new() });
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(1 << i));
             }
@@ -59,6 +59,7 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
 
 pub(crate) struct SQLiteTransaction<'t> {
     txn: MutexGuard<'t, rusqlite::Connection>,
+    axis_cache: HashMap<String, Axis>
 }
 impl<'t> SQLiteTransaction<'t> {
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
@@ -117,17 +118,19 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     }
 
     /// Replace a whole axis. Only do this through `Catalog.union_axis()`.
-    fn put_axis(&self, axis: &Axis) -> Fallible<()> {
+    fn put_axis(&mut self, axis: &Axis) -> Fallible<()> {
         self.txn.execute(
             "INSERT OR REPLACE INTO AxisContent(axis_name, content) VALUES (?,?);",
             &[&axis.name as &dyn ToSql, &bincode::serialize(&axis)?],
         )?;
+        self.axis_cache.insert(axis.name.clone(), axis.clone());
         Ok(())
     }
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
-    fn get_axis(&self, axis_name: &str) -> Fallible<Axis> {
-        let res: Option<Vec<u8>> = self
+    fn get_axis(&mut self, axis_name: &str) -> Fallible<&Axis> {
+        if !self.axis_cache.contains_key(axis_name) {
+            let res: Option<Vec<u8>> = self
             .txn
             .query_row(
                 "SELECT content FROM AxisContent WHERE axis_name = ?",
@@ -135,10 +138,15 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 |r| r.get(0),
             )
             .optional()?;
-        match res {
-            None => Err(StoiError::NotFound("axis doesn't exist", axis_name.into())),
-            Some(x) => Ok(bincode::deserialize(&x[..])?),
+            match res {
+                None => return Err(StoiError::NotFound("axis doesn't exist", axis_name.into())),
+                Some(x) => {
+                    let axis : Axis = bincode::deserialize(&x[..])?;
+                    self.axis_cache.insert(axis_name.to_string(), axis);
+                },
+            }
         }
+        Ok(self.axis_cache.get(axis_name).unwrap())
     }
 
     /// Create a quilt
@@ -281,12 +289,37 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     // put_patch is part of Self, not Storage because you can only do it using put_commit()
 
-    /// Push a commit to the database, balancing as necessary
+    /// Get the bounding box of a patch
     ///
-    /// The heuristic used for balancing may change in the future, but this release works like so:
+    /// These bounding boxes depend on the storage order of the catalog, so they aren't something
+    /// the Patch could know on its own, instead you find this through the catalog
+    fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox> {
+        // TODO: avoid downloading the axes repeatedly
+        patch
+            .axes()
+            .iter()
+            .map(|patch_axis| {
+                let patch_axis_labelset: HashSet<Label> =
+                    patch_axis.labels().iter().copied().collect();
+                let global_axis = self.get_axis(&patch_axis.name)?;
+                let first = global_axis
+                    .labels()
+                    .iter()
+                    .position(|x| patch_axis_labelset.contains(x));
+                let last = global_axis
+                    .labels()
+                    .iter()
+                    .rposition(|x| patch_axis_labelset.contains(x));
+
+                Ok((first.unwrap_or(0), last.unwrap_or(1 << 30)))
+            })
+            .collect()
+    }
+
+    /// Make changes to a tensor via a commit
     ///
-    ///     - Take patches from this commit that overlap this patch
-    ///     - Fetch the area corresponding to the smallest one
+    /// This is only available together, so that the underlying storage media can do this
+    /// atomically without a complicated API
     fn put_commit(
         &self,
         quilt_name: &str,
@@ -295,6 +328,13 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         message: &str,
         patches: Vec<&Patch>,
     ) -> Fallible<()> {
+        // The heuristic used for balancing may change in the future, but this is my suggestion:
+        //
+        //     - Take patches from this commit that overlap this patch
+        //          - con: It leaves alone anything that doesn't overlap
+        //     - Merge it with the one that has greatest overlap
+        //     - If it gets too large, split it by the longest dimension
+        //
         let comm_id: i64 = self.gen_id();
         for pat in patches {
             self.put_patch(comm_id, pat)?;

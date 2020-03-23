@@ -83,14 +83,14 @@ impl Catalog {
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
     pub fn get_axis(&self, name: &str) -> Fallible<Axis> {
-        self.storage.txn()?.get_axis(name)
+        Ok(self.storage.txn()?.get_axis(name)?.clone())
     }
 
     /// Replace the labels of an axis, in the order you would expect them to be stored.
     ///
     /// Returns true iff the axis was mutated in the process
     pub fn union_axis(&self, new_axis: &Axis) -> Fallible<bool> {
-        let txn = self.storage.txn()?;
+        let mut txn = self.storage.txn()?;
         let mutated = txn.union_axis(new_axis)?;
         txn.finish()?;
         Ok(mutated)
@@ -111,7 +111,7 @@ impl Catalog {
         }
 
         // All of this needs to be done in one transaction
-        let txn = self.storage.txn()?;
+        let mut txn = self.storage.txn()?;
 
         //
         // Find all the labels of the axes they are planning to use
@@ -210,7 +210,7 @@ impl Catalog {
     ) -> Fallible<()> {
         // TODO: Implement split/balance...
         // TODO: Think about axis versioning - maybe not a good idea anyway?
-        let txn = self.storage.txn()?;
+        let mut txn = self.storage.txn()?;
 
         // Check that the axes are consistent
         let quilt_details = txn.get_quilt_details(quilt_name)?;
@@ -231,7 +231,7 @@ impl Catalog {
 
         // Extend all axes as necessary to complete the patching
         for axis_name in &quilt_details.axes {
-            let mut axis = txn.get_axis(axis_name)?;
+            let mut axis = txn.get_axis(axis_name)?.clone();
             let mut mutated = false;
             for patch in &patches {
                 // Linear search over max 4 elements so don't sweat it
@@ -297,6 +297,12 @@ pub(crate) trait StorageTransaction {
         bounds: &[BoundingBox],
     ) -> Fallible<Vec<PatchID>>;
 
+    /// Get the bounding box of a patch
+    /// 
+    /// These bounding boxes depend on the storage order of the catalog, so they aren't something
+    /// the Patch could know on its own, instead you find this through the catalog
+    fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox>;
+
     /// Get a single patch by ID
     fn get_patch(&self, id: PatchID) -> Fallible<Patch>;
 
@@ -304,10 +310,10 @@ pub(crate) trait StorageTransaction {
     fn create_axis(&self, name: &str, ignore_if_exists: bool) -> Fallible<()>;
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
-    fn get_axis(&self, name: &str) -> Fallible<Axis>;
+    fn get_axis(&mut self, name: &str) -> Fallible<&Axis>;
 
     /// Overwrite a whole axis. Only do this through `Catalog.union_axis()`.
-    fn put_axis(&self, axis: &Axis) -> Fallible<()>;
+    fn put_axis(&mut self, axis: &Axis) -> Fallible<()>;
 
     /// Make changes to a tensor via a commit
     ///
@@ -328,16 +334,17 @@ pub(crate) trait StorageTransaction {
     /// Use the actual axis values to resolve a request into specific labels
     ///
     /// This is necessary because we need to turn the axis labels into storage indices for range queries
-    fn get_axis_from_selection(&self, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
+    fn get_axis_from_selection(&mut self, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
         Ok(match sel {
             AxisSelection::All { name } => {
+                // TODO: Look at Cow instead of clone
                 let axis = self.get_axis(&name)?;
                 let full_range = (0, axis.len());
-                (axis, vec![full_range])
+                (axis.clone(), vec![full_range])
             }
             AxisSelection::Labels { name, labels } => {
                 // TODO: Profile this - it could be a performance issue
-                let axis: Axis = self.get_axis(&name)?;
+                let axis = self.get_axis(&name)?;
                 let labelset = axis.labelset();
                 let start_ix = axis
                     .labels()
@@ -352,7 +359,7 @@ pub(crate) trait StorageTransaction {
             }
             AxisSelection::RangeInclusive { name, start, end } => {
                 // Axis labels are not guaranteed to be sorted because it may be optimized for storage, not lookup
-                let axis: Axis = self.get_axis(&name)?;
+                let axis = self.get_axis(&name)?;
                 let lab = axis.labels();
                 let start_ix = lab
                     .iter()
@@ -375,9 +382,10 @@ pub(crate) trait StorageTransaction {
     /// Replace the labels of an axis, in the order you would expect them to be stored.
     ///
     /// Returns true iff the axis was mutated in the process
-    fn union_axis(&self, new_axis: &Axis) -> Fallible<bool> {
+    fn union_axis(&mut self, new_axis: &Axis) -> Fallible<bool> {
         let mut existing_axis = self
             .get_axis(&new_axis.name)
+            .cloned()
             .unwrap_or(Axis::empty(&new_axis.name));
         let mutated = existing_axis.union(new_axis);
         if mutated {

@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS PatchContent(
 
 CREATE TABLE IF NOT EXISTS AxisContent(
     axis_name TEXT PRIMARY KEY,
-    content   BLOB
+    content   BLOB,
+    last_modified TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS Comm(
