@@ -77,7 +77,7 @@ fn apply_patch(catalog: State<Arc<Catalog>>, commit: Json<WebCommit>) -> Fallibl
         &commit.parent_tag,
         &commit.new_tag,
         &commit.message,
-        commit.patches.iter().collect(), // send references not objects
+        &commit.patches.iter().collect_vec(), // send references not objects
     )?;
     Ok(())
 }

@@ -2,8 +2,8 @@ use crate::sqlite::SQLiteConnection;
 use crate::Fallible;
 use itertools::Itertools;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::convert::TryInto;
+use std::sync::Arc;
 
 use crate::{
     Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRef, PatchRequest, Quilt,
@@ -125,7 +125,7 @@ impl Catalog {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<&Patch>,
+        patches: &[&Patch],
     ) -> Fallible<()> {
         // TODO: Implement split/balance...
         // TODO: Think about axis versioning - maybe not a good idea anyway?
@@ -133,7 +133,7 @@ impl Catalog {
 
         // Check that the axes are consistent
         let quilt_details = txn.get_quilt_details(quilt_name)?;
-        for patch in &patches {
+        for patch in patches {
             if patch
                 .axes()
                 .iter()
@@ -152,7 +152,7 @@ impl Catalog {
         for axis_name in &quilt_details.axes {
             let mut axis = txn.get_axis(axis_name)?.clone();
             let mut mutated = false;
-            for patch in &patches {
+            for patch in patches {
                 // Linear search over max 4 elements so don't sweat it
                 mutated |= axis.union(&patch.axes().iter().find(|a| &a.name == axis_name).unwrap());
             }
@@ -218,7 +218,7 @@ pub(crate) trait StorageTransaction {
     ) -> Fallible<Vec<PatchRef>>;
 
     /// Get the bounding box of a patch
-    /// 
+    ///
     /// These bounding boxes depend on the storage order of the catalog, so they aren't something
     /// the Patch could know on its own, instead you find this through the catalog
     fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox>;
@@ -245,7 +245,7 @@ pub(crate) trait StorageTransaction {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<&Patch>,
+        patches: &[&Patch],
     ) -> Fallible<()>;
 
     /// Finish and commit the transaction successfully
@@ -254,7 +254,11 @@ pub(crate) trait StorageTransaction {
     /// Use the actual axis values to resolve a request into specific labels
     ///
     /// This is necessary because we need to turn the axis labels into storage indices for range queries
-    fn get_axis_from_selection(&mut self, name: &str, sel: AxisSelection) -> Fallible<(Axis, Vec<AxisSegment>)> {
+    fn get_axis_from_selection(
+        &mut self,
+        name: &str,
+        sel: AxisSelection,
+    ) -> Fallible<(Axis, Vec<AxisSegment>)> {
         Ok(match sel {
             AxisSelection::All => {
                 let axis = self.get_axis(&name)?;
@@ -294,7 +298,7 @@ pub(crate) trait StorageTransaction {
                     Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
                     vec![(start_ix, end_ix)],
                 )
-            },
+            }
             AxisSelection::StorageSlice(start_ix, end_ix) => {
                 let axis = self.get_axis(&name)?;
                 let lab = axis.labels();
@@ -350,7 +354,7 @@ pub(crate) trait StorageTransaction {
         for axis_name in &quilt_details.axes {
             let (axis, segments) = match request.pop() {
                 Some(sel) => self.get_axis_from_selection(axis_name, sel)?,
-                None => self.get_axis_from_selection(axis_name, AxisSelection::All)?
+                None => self.get_axis_from_selection(axis_name, AxisSelection::All)?,
             };
             axes.push(axis);
             segments_by_axis.push(segments);
@@ -374,29 +378,32 @@ pub(crate) trait StorageTransaction {
         let total_bounding_boxes: usize = segments_by_axis.iter().map(|s| s.len()).product();
         let bounding_boxes = if total_bounding_boxes > 1000 {
             vec![[
-                (0usize, 1usize<<60),
-                (0usize, 1usize<<60),
-                (0usize, 1usize<<60),
-                (0usize, 1usize<<60),
+                (0usize, 1usize << 60),
+                (0usize, 1usize << 60),
+                (0usize, 1usize << 60),
+                (0usize, 1usize << 60),
             ]]
         } else {
             segments_by_axis
-            .iter()
-            .multi_cartesian_product()
-            .map(|segments_group| [
-                **segments_group.get(0).unwrap_or(&&(0usize, 1usize<<60)),
-                **segments_group.get(1).unwrap_or(&&(0usize, 1usize<<60)),
-                **segments_group.get(2).unwrap_or(&&(0usize, 1usize<<60)),
-                **segments_group.get(3).unwrap_or(&&(0usize, 1usize<<60)),
-            ])
-            .collect::<Vec<BoundingBox>>()
+                .iter()
+                .multi_cartesian_product()
+                .map(|segments_group| {
+                    [
+                        **segments_group.get(0).unwrap_or(&&(0usize, 1usize << 60)),
+                        **segments_group.get(1).unwrap_or(&&(0usize, 1usize << 60)),
+                        **segments_group.get(2).unwrap_or(&&(0usize, 1usize << 60)),
+                        **segments_group.get(3).unwrap_or(&&(0usize, 1usize << 60)),
+                    ]
+                })
+                .collect::<Vec<BoundingBox>>()
         };
 
         //
         // Find the patches we need to fill all the bounding boxes
         //
 
-        let patch_refs = self.get_patches_by_bounding_boxes(&quilt_name, &tag, true, &bounding_boxes)?;
+        let patch_refs =
+            self.get_patches_by_bounding_boxes(&quilt_name, &tag, true, &bounding_boxes)?;
 
         //
         // Download and apply all the patches
@@ -473,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_fetch() {
+    fn test_fetch_commit_fetch() {
         let cat = Catalog::connect("").unwrap();
         cat.create_quilt("sales", &["itm", "lct", "day"], true)
             .unwrap();
@@ -483,10 +490,7 @@ mod tests {
             .fetch(
                 "sales",
                 "latest",
-                vec![
-                    AxisSelection::All,
-                    AxisSelection::Labels(vec![1]),
-                ],
+                vec![AxisSelection::All, AxisSelection::Labels(vec![1])],
             )
             .unwrap();
         // We asked for two dimensions but any dimensions you missed will be tacked on
@@ -495,10 +499,30 @@ mod tests {
 
         pat = Patch::build()
             .axis_range("itm", 9..12)
-            .axis_range("xyz", 2..4)
+            .axis_range("lct", 2..4)
+            .axis("day", &[700])
             .content(None)
             .unwrap();
 
         pat.content_mut().fill(1.0);
+
+        cat.commit(
+            "sales",
+            "latest",
+            "latest",
+            "message",
+            &[&pat]
+        ).unwrap();
+        
+        let pat2 = cat.fetch(
+            "sales",
+            "latest",
+            vec![ AxisSelection::All, AxisSelection::All, AxisSelection::All ]
+        ).unwrap();
+
+        assert_eq!(
+            pat.content(),
+            pat2.content()
+        );
     }
 }

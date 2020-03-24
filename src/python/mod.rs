@@ -11,7 +11,8 @@ use itertools::Itertools;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyAny};
+use std::collections::HashMap;
 
 mod axis;
 mod patch;
@@ -88,42 +89,43 @@ impl Catalog {
     #[args(axes = "**")]
     pub fn fetch(
         &self,
-        quilt_name: String,
-        tag: String,
+        quilt_name: &str,
+        tag: &str,
         axes: Option<&PyDict>,
     ) -> PyResult<crate::python::Patch> {
+        let specified_axes : HashMap<String, &PyAny> = axes
+            .map(|a| a.extract())
+            .transpose()?
+            .unwrap_or_default();
+        let quilt_details = self.inner.get_quilt_details(quilt_name)?;
         let mut axes_selections = vec![];
 
-        // These type-check gymnastics is to handle the different ways to specify patch labels
-        if let Some(x) = axes {
-            // We need to iterate because the order matters and HashSet would have missed that
-            for (k, v) in x.iter() {
-                let axis_name = k.extract()?;
-
+        // We need to iterate because the order matters and HashSet would have missed that
+        for axis_name in &quilt_details.axes {
+            if let Some(v) = specified_axes.get(axis_name.as_str()) {
                 if let Ok(selection) = v.extract::<Vec<i64>>() {
-                    axes_selections.push(crate::AxisSelection::Labels {
-                        name: axis_name,
-                        labels: selection,
-                    });
+                    axes_selections.push(crate::AxisSelection::Labels (
+                        selection,
+                    ));
                 } else if let Ok(selection) = v.extract::<(i64, i64)>() {
-                    axes_selections.push(crate::AxisSelection::LabelSlice {
-                        name: axis_name,
-                        start: selection.0,
-                        end: selection.1,
-                    });
+                    axes_selections.push(crate::AxisSelection::LabelSlice(
+                        selection.0,
+                        selection.1,
+                    ));
                 } else if let Ok(selection) = v.extract::<i64>() {
-                    axes_selections.push(crate::AxisSelection::Labels {
-                        name: axis_name,
-                        labels: vec![selection],
-                    });
+                    axes_selections.push(crate::AxisSelection::Labels (
+                        vec![selection],
+                    ));
                 } else if v.is_none() {
-                    axes_selections.push(crate::AxisSelection::All { name: axis_name });
+                    axes_selections.push(crate::AxisSelection::All);
                 } else {
                     // Play it safe and don't just ignore errors
                     Err(StoiError::InvalidValue(
                         "Didn't recognize one of the axis selections",
                     ))?;
                 }
+            } else {
+                axes_selections.push(crate::AxisSelection::All);
             }
         }
 
@@ -162,7 +164,7 @@ impl Catalog {
             parent_tag.unwrap_or("latest"),
             new_tag.unwrap_or("latest"),
             &message,
-            patches.iter().map(|p| &p.inner).collect(),
+            &patches.iter().map(|p| &p.inner).collect_vec(),
         )?;
         Ok(())
     }

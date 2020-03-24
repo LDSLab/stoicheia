@@ -34,8 +34,9 @@ pub mod python;
 pub type Label = i64;
 
 /// Patch details, everything you can get without loading the content
-/// 
+///
 /// These are used for compaction and balancing
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct PatchRef {
     id: PatchID,
     bounding_box: BoundingBox,

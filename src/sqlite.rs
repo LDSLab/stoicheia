@@ -1,8 +1,11 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
-use crate::{Axis, AxisSegment, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef, QuiltDetails, StoiError};
+use crate::{
+    Axis, AxisSegment, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef, QuiltDetails,
+    StoiError,
+};
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
-use std::collections::{HashMap,HashSet};
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -46,7 +49,10 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
         for i in 0..10 {
             if let Ok(txn) = self.conn.try_lock() {
                 txn.execute_batch("BEGIN;")?;
-                return Ok(SQLiteTransaction { txn, axis_cache: HashMap::new() });
+                return Ok(SQLiteTransaction {
+                    txn,
+                    axis_cache: HashMap::new(),
+                });
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(1 << i));
             }
@@ -59,7 +65,7 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
 
 pub(crate) struct SQLiteTransaction<'t> {
     txn: MutexGuard<'t, rusqlite::Connection>,
-    axis_cache: HashMap<String, Axis>
+    axis_cache: HashMap<String, Axis>,
 }
 impl<'t> SQLiteTransaction<'t> {
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
@@ -133,19 +139,19 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     fn get_axis(&mut self, axis_name: &str) -> Fallible<&Axis> {
         if !self.axis_cache.contains_key(axis_name) {
             let res: Option<Vec<u8>> = self
-            .txn
-            .query_row(
-                "SELECT content FROM AxisContent WHERE axis_name = ?",
-                &[&axis_name],
-                |r| r.get(0),
-            )
-            .optional()?;
+                .txn
+                .query_row(
+                    "SELECT content FROM AxisContent WHERE axis_name = ?",
+                    &[&axis_name],
+                    |r| r.get(0),
+                )
+                .optional()?;
             match res {
                 None => return Err(StoiError::NotFound("axis doesn't exist", axis_name.into())),
                 Some(x) => {
-                    let axis : Axis = bincode::deserialize(&x[..])?;
+                    let axis: Axis = bincode::deserialize(&x[..])?;
                     self.axis_cache.insert(axis_name.to_string(), axis);
-                },
+                }
             }
         }
         Ok(self.axis_cache.get(axis_name).unwrap())
@@ -206,16 +212,16 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     ///
     /// You can specify many bounding boxes but the search degrades the more are provided. It's
     /// probably never a good idea to load more than a hundred.
-    /// 
+    ///
     /// For fetching, you need deep=true, so you see the state of the tensor at that commit,
     /// but for compaction, deep=false can avoid filling in void areas.
-    /// 
+    ///
     /// Accepts:
     ///     quilt_name: the quilt associated with the tag we're looking for
     ///     tag: the named commit
     ///     deep: whether to provide only the patches within this quilt, or all it's ancestors
     ///     bounding_boxes: returned patches should intersect at least one of these boxes
-    /// 
+    ///
     /// Returns:
     ///     A vector of Patch ID's
     fn get_patches_by_bounding_boxes(
@@ -226,10 +232,8 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         bounding_boxes: &[BoundingBox],
     ) -> Fallible<Vec<PatchRef>> {
         // This is a fairly complex query we need to run so it deserved long-hand
-        let mut stmt = self
-            .txn
-            .prepare(
-                "
+        let mut stmt = self.txn.prepare(
+            "
                 WITH RECURSIVE CommitAncestry AS (
                     SELECT
                             comm_id parent_comm_id,
@@ -253,18 +257,19 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                     FROM CommitAncestry
                     INNER JOIN Patch USING (comm_id)
                     INNER JOIN json_each(?) BoundingBox ON (
-                            dim_0_min <= json_extract(value, '$[0]')
-                        AND dim_0_max >= json_extract(value, '$[1]')
-                        AND dim_1_min <= json_extract(value, '$[2]')
-                        AND dim_1_max >= json_extract(value, '$[3]')
-                        AND dim_2_min <= json_extract(value, '$[4]')
-                        AND dim_2_max >= json_extract(value, '$[5]')
-                        AND dim_3_min <= json_extract(value, '$[6]')
-                        AND dim_3_max >= json_extract(value, '$[7]')
+                            dim_0_max >= json_extract(value, '$[0]')
+                        AND dim_0_min <= json_extract(value, '$[1]')
+                        AND dim_1_max >= json_extract(value, '$[2]')
+                        AND dim_1_min <= json_extract(value, '$[3]')
+                        AND dim_2_max >= json_extract(value, '$[4]')
+                        AND dim_2_min <= json_extract(value, '$[5]')
+                        AND dim_3_max >= json_extract(value, '$[6]')
+                        AND dim_3_min <= json_extract(value, '$[7]')
                     )
                     GROUP BY comm_id, patch_id
                     ORDER BY comm_id ASC, patch_id ASC
-            ")?;
+            ",
+        )?;
         let mut rows = stmt.query(&[
             &quilt_name as &dyn ToSql,
             &tag,
@@ -280,8 +285,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                     })
                     .map(|bx| {
                         [
-                            bx[0].0, bx[0].1, bx[1].0, bx[1].1, bx[2].0, bx[2].1, bx[3].0,
-                            bx[3].1,
+                            bx[0].0, bx[0].1, bx[1].0, bx[1].1, bx[2].0, bx[2].1, bx[3].0, bx[3].1,
                         ]
                     })
                     .collect_vec(),
@@ -294,10 +298,22 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 id: row.get(0)?,
                 decompressed_size: row.get::<usize, i64>(1)? as u64,
                 bounding_box: [
-                    (row.get::<usize, i64>(2)? as usize, row.get::<usize, i64>(3)? as usize),
-                    (row.get::<usize, i64>(4)? as usize, row.get::<usize, i64>(5)? as usize),
-                    (row.get::<usize, i64>(6)? as usize, row.get::<usize, i64>(7)? as usize),
-                    (row.get::<usize, i64>(8)? as usize, row.get::<usize, i64>(9)? as usize),
+                    (
+                        row.get::<usize, i64>(2)? as usize,
+                        row.get::<usize, i64>(3)? as usize,
+                    ),
+                    (
+                        row.get::<usize, i64>(4)? as usize,
+                        row.get::<usize, i64>(5)? as usize,
+                    ),
+                    (
+                        row.get::<usize, i64>(6)? as usize,
+                        row.get::<usize, i64>(7)? as usize,
+                    ),
+                    (
+                        row.get::<usize, i64>(8)? as usize,
+                        row.get::<usize, i64>(9)? as usize,
+                    ),
                 ],
             });
         }
@@ -321,26 +337,23 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     /// the Patch could know on its own, instead you find this through the catalog
     fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox> {
         let bbvec = (0..4)
-            .map(|ax_ix| {
-                match patch.axes().get(ax_ix) {
-                    Some(patch_axis) => {
-                        let patch_axis_labelset: HashSet<Label> =
+            .map(|ax_ix| match patch.axes().get(ax_ix) {
+                Some(patch_axis) => {
+                    let patch_axis_labelset: HashSet<Label> =
                         patch_axis.labels().iter().copied().collect();
-                        let global_axis = self.get_axis(&patch_axis.name)?;
-                        let first = global_axis
-                            .labels()
-                            .iter()
-                            .position(|x| patch_axis_labelset.contains(x));
-                        let last = global_axis
-                            .labels()
-                            .iter()
-                            .rposition(|x| patch_axis_labelset.contains(x));
-    
-                        Ok((first.unwrap_or(0), last.unwrap_or(1 << 60)))
-                    }
-                    None => Ok((0, 1<<60))
+                    let global_axis = self.get_axis(&patch_axis.name)?;
+                    let first = global_axis
+                        .labels()
+                        .iter()
+                        .position(|x| patch_axis_labelset.contains(x));
+                    let last = global_axis
+                        .labels()
+                        .iter()
+                        .rposition(|x| patch_axis_labelset.contains(x));
+
+                    Ok((first.unwrap_or(0), last.unwrap_or(1 << 60)))
                 }
-                
+                None => Ok((0, 1 << 60)),
             })
             .collect::<Fallible<Vec<AxisSegment>>>()?;
         Ok(bbvec[..].try_into()?)
@@ -356,7 +369,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         parent_tag: &str,
         new_tag: &str,
         message: &str,
-        patches: Vec<&Patch>,
+        patches: &[&Patch],
     ) -> Fallible<()> {
         // The heuristic used for balancing may change in the future, but this is my suggestion:
         //
@@ -368,13 +381,13 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         let comm_id: i64 = self.gen_id();
         for pat in patches {
             let new_bounding_box = self.get_bounding_box(pat)?;
-            
+
             // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
             let friend_patch_ref = self
                 .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
                 .into_iter()
                 .min_by_key(|patch_ref| patch_ref.decompressed_size);
-            
+
             // Find the visible area, not the original. If it was occluded by another (larger?) patch
             // in between, we need to include that occlusion in the new patch because it's what you
             // would have seen if you had fetch()ed
