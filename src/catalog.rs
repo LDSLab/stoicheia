@@ -506,23 +506,17 @@ mod tests {
 
         pat.content_mut().fill(1.0);
 
-        cat.commit(
-            "sales",
-            "latest",
-            "latest",
-            "message",
-            &[&pat]
-        ).unwrap();
-        
-        let pat2 = cat.fetch(
-            "sales",
-            "latest",
-            vec![ AxisSelection::All, AxisSelection::All, AxisSelection::All ]
-        ).unwrap();
+        cat.commit("sales", "latest", "latest", "message", &[&pat])
+            .unwrap();
 
-        assert_eq!(
-            pat.content(),
-            pat2.content()
-        );
+        let pat2 = cat
+            .fetch(
+                "sales",
+                "latest",
+                vec![AxisSelection::All, AxisSelection::All, AxisSelection::All],
+            )
+            .unwrap();
+
+        assert_eq!(pat.content(), pat2.content());
     }
 }

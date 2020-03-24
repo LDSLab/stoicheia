@@ -5,6 +5,7 @@ extern crate serde_derive;
 #[macro_use]
 extern crate ndarray as nd;
 extern crate rusqlite as sql;
+use itertools::Itertools;
 
 mod patch;
 pub use patch::Patch;
@@ -63,7 +64,6 @@ pub type PatchRequest = Vec<AxisSelection>;
 
 /// Selection by axis labels, similar to .loc[] in Pandas
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
-//#[serde(tag = "type")]
 pub enum AxisSelection {
     All,
     LabelSlice(Label, Label),
@@ -79,3 +79,13 @@ pub(crate) type AxisSegment = (usize, usize);
 /// Remember that in these boxes, storage indices (usize) are always consecutive,
 /// but labels (i64) may not be.
 pub(crate) type BoundingBox = [AxisSegment; 4];
+pub(crate) fn merge_bounding_boxes(boxes: &[BoundingBox]) -> Option<BoundingBox> {
+    boxes.iter().copied().fold1(|l, r| {
+        [
+            (l[0].0.min(r[0].0), l[0].1.max(r[0].1)),
+            (l[1].0.min(r[1].0), l[1].1.max(r[1].1)),
+            (l[2].0.min(r[2].0), l[2].1.max(r[2].1)),
+            (l[3].0.min(r[3].0), l[3].1.max(r[3].1)),
+        ]
+    })
+}

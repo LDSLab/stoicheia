@@ -49,12 +49,7 @@ impl<'t> Quilt<'t> {
     /// - `quilt_name` is this quilt
     /// - `parent_tag` is this tag
     /// - `new_tag` defaults to this tag (which means overwrite it)
-    pub fn commit(
-        &self,
-        new_tag: Option<&str>,
-        message: &str,
-        patches: &[&Patch],
-    ) -> Fallible<()> {
+    pub fn commit(&self, new_tag: Option<&str>, message: &str, patches: &[&Patch]) -> Fallible<()> {
         self.catalog.commit(
             &self.name,
             &self.tag,

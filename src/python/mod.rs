@@ -11,7 +11,7 @@ use itertools::Itertools;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyAny};
+use pyo3::types::{PyAny, PyDict};
 use std::collections::HashMap;
 
 mod axis;
@@ -93,10 +93,8 @@ impl Catalog {
         tag: &str,
         axes: Option<&PyDict>,
     ) -> PyResult<crate::python::Patch> {
-        let specified_axes : HashMap<String, &PyAny> = axes
-            .map(|a| a.extract())
-            .transpose()?
-            .unwrap_or_default();
+        let specified_axes: HashMap<String, &PyAny> =
+            axes.map(|a| a.extract()).transpose()?.unwrap_or_default();
         let quilt_details = self.inner.get_quilt_details(quilt_name)?;
         let mut axes_selections = vec![];
 
@@ -104,18 +102,12 @@ impl Catalog {
         for axis_name in &quilt_details.axes {
             if let Some(v) = specified_axes.get(axis_name.as_str()) {
                 if let Ok(selection) = v.extract::<Vec<i64>>() {
-                    axes_selections.push(crate::AxisSelection::Labels (
-                        selection,
-                    ));
+                    axes_selections.push(crate::AxisSelection::Labels(selection));
                 } else if let Ok(selection) = v.extract::<(i64, i64)>() {
-                    axes_selections.push(crate::AxisSelection::LabelSlice(
-                        selection.0,
-                        selection.1,
-                    ));
+                    axes_selections
+                        .push(crate::AxisSelection::LabelSlice(selection.0, selection.1));
                 } else if let Ok(selection) = v.extract::<i64>() {
-                    axes_selections.push(crate::AxisSelection::Labels (
-                        vec![selection],
-                    ));
+                    axes_selections.push(crate::AxisSelection::Labels(vec![selection]));
                 } else if v.is_none() {
                     axes_selections.push(crate::AxisSelection::All);
                 } else {

@@ -163,7 +163,7 @@ pub fn bench_commit(c: &mut Criterion) {
                                 "latest",
                                 "latest",
                                 "message",
-                                vec![black_box(&patch)],
+                                &[black_box(&patch)],
                             )
                             .unwrap()
                     }
@@ -191,7 +191,7 @@ pub fn bench_commit(c: &mut Criterion) {
                             "latest",
                             "latest",
                             "message",
-                            vec![black_box(&patch)],
+                            &[black_box(&patch)],
                         )
                         .unwrap()
                 }

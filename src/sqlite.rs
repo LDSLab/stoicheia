@@ -1,7 +1,7 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
 use crate::{
-    Axis, AxisSegment, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef, QuiltDetails,
-    StoiError,
+    merge_bounding_boxes, Axis, AxisSegment, AxisSelection, BoundingBox, Fallible, Label, Patch,
+    PatchID, PatchRef, QuiltDetails, StoiError,
 };
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
@@ -102,6 +102,16 @@ impl<'t> SQLiteTransaction<'t> {
             &[&patch_id as &dyn ToSql, &pat.serialize(None)?],
         )?;
         Ok(patch_id)
+    }
+
+    /// Delete a patch
+    /// 
+    /// This only makes sense untagg(), and for compaction as part of a commit(),
+    /// and you can't do this from outside
+    fn del_patch(&self, patch_id: PatchID) -> Fallible<()> {
+        self.txn.execute("DELETE FROM Patch WHERE patch_id = ?;", &[patch_id])?;
+        self.txn.execute("DELETE FROM PatchContent WHERE patch_id = ?;", &[patch_id])?;
+        Ok(())
     }
 
     /// Generate an id using the time plus a small salt
@@ -383,16 +393,32 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
             let new_bounding_box = self.get_bounding_box(pat)?;
 
             // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
-            let friend_patch_ref = self
+            let maybe_friend_patch_ref = self
                 .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
                 .into_iter()
                 .min_by_key(|patch_ref| patch_ref.decompressed_size);
 
-            // Find the visible area, not the original. If it was occluded by another (larger?) patch
-            // in between, we need to include that occlusion in the new patch because it's what you
-            // would have seen if you had fetch()ed
-            //let friend_visible_area = self.fetch(quilt_name, new_tag)
-            self.put_patch(comm_id, pat, new_bounding_box)?;
+            if let Some(friend_patch_ref) = maybe_friend_patch_ref {
+                // Find the visible area, not the original. If it was occluded by another (larger?) patch
+                // in between, we need to include that occlusion in the new patch because it's what you
+                // would have seen if you had fetch()ed
+                let patch_request = friend_patch_ref.bounding_box[..]
+                    .into_iter()
+                    .map(|(start_ix, end_ix)| AxisSelection::StorageSlice(*start_ix, *end_ix))
+                    .collect_vec();
+                let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
+                // Garbage collect the old patch because now it has been compacted into the new one
+                self.del_patch(friend_patch_ref.id)?;
+                // Add that new patch
+                self.put_patch(
+                    comm_id,
+                    &Patch::merge(&[&friend_visible_area, &pat])?,
+                    merge_bounding_boxes(&[new_bounding_box, friend_patch_ref.bounding_box])
+                        .unwrap(),
+                )?;
+            } else {
+                self.put_patch(comm_id, pat, new_bounding_box)?;
+            };
         }
         self.txn.execute(
             // 1. Look for a tag given it's name and quilt.
