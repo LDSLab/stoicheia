@@ -158,13 +158,7 @@ pub fn bench_commit(c: &mut Criterion) {
                 b.iter(|| {
                     for _ in 0..rewrites {
                         catalog
-                            .commit(
-                                "quilt",
-                                "latest",
-                                "latest",
-                                "message",
-                                &[black_box(&patch)],
-                            )
+                            .commit("quilt", "latest", "latest", "message", &[black_box(&patch)])
                             .unwrap()
                     }
                 })
@@ -186,13 +180,7 @@ pub fn bench_commit(c: &mut Criterion) {
                     .unwrap();
                 for _ in 0..rewrites {
                     catalog
-                        .commit(
-                            "quilt",
-                            "latest",
-                            "latest",
-                            "message",
-                            &[black_box(&patch)],
-                        )
+                        .commit("quilt", "latest", "latest", "message", &[black_box(&patch)])
                         .unwrap()
                 }
                 b.iter(|| {

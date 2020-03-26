@@ -2,7 +2,6 @@ use crate::sqlite::SQLiteConnection;
 use crate::Fallible;
 use itertools::Itertools;
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::sync::Arc;
 
 use crate::{
@@ -181,13 +180,13 @@ impl Catalog {
     }
 }
 
-pub(crate) trait StorageConnection: Send + Sync {
+pub trait StorageConnection: Send + Sync {
     type Transaction: StorageTransaction;
     fn txn(self) -> Fallible<Self::Transaction>;
 }
 
 /// A connection to tensor storage
-pub(crate) trait StorageTransaction {
+pub trait StorageTransaction {
     /// Get only the metadata associated with a quilt by name
     fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails>;
 

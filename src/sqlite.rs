@@ -105,12 +105,14 @@ impl<'t> SQLiteTransaction<'t> {
     }
 
     /// Delete a patch
-    /// 
+    ///
     /// This only makes sense untagg(), and for compaction as part of a commit(),
     /// and you can't do this from outside
     fn del_patch(&self, patch_id: PatchID) -> Fallible<()> {
-        self.txn.execute("DELETE FROM Patch WHERE patch_id = ?;", &[patch_id])?;
-        self.txn.execute("DELETE FROM PatchContent WHERE patch_id = ?;", &[patch_id])?;
+        self.txn
+            .execute("DELETE FROM Patch WHERE patch_id = ?;", &[patch_id])?;
+        self.txn
+            .execute("DELETE FROM PatchContent WHERE patch_id = ?;", &[patch_id])?;
         Ok(())
     }
 
@@ -409,13 +411,27 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
                 // Garbage collect the old patch because now it has been compacted into the new one
                 self.del_patch(friend_patch_ref.id)?;
-                // Add that new patch
-                self.put_patch(
-                    comm_id,
-                    &Patch::merge(&[&friend_visible_area, &pat])?,
-                    merge_bounding_boxes(&[new_bounding_box, friend_patch_ref.bounding_box])
-                        .unwrap(),
-                )?;
+
+                // Split the patch if necessary
+                let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
+
+                let long_axis = new_large_patch.axes()
+                    .iter()
+                    .max_by_key(|ax| ax.labels().len())
+                    .unwrap(); // <- Patch::new() checks for at least one axis
+                // Replace the patch axis for the global axis by that name
+                let long_axis = self.get_axis(&long_axis.name)?;
+        
+                for new_patch in new_large_patch.maybe_split(long_axis)? {
+                    // Add each new patch
+                    let bbox = self.get_bounding_box(&new_patch)?;
+                    self.put_patch(
+                        comm_id,
+                        &new_patch,
+                        bbox
+                    )?;
+                }
+                
             } else {
                 self.put_patch(comm_id, pat, new_bounding_box)?;
             };

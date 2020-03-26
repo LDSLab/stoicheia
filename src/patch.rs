@@ -1,9 +1,10 @@
+use crate::catalog::StorageTransaction;
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray as nd;
 use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
 /// A tensor with labeled axes
@@ -25,7 +26,9 @@ pub struct Patch {
     axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
     dense: ArrayD<f32>,
-    // TODO: Consider putting bounding boxes into Patch
+    // TODO: Bounding box for this patch on the global axes.
+    // - Includes an ID for the catalog, to prevent using them with the wrong catalog
+    // - If present, then the axes also match the order of the global axes
 }
 
 impl Patch {
@@ -34,6 +37,9 @@ impl Patch {
     /// The labels must be in sorted order (within the patch), if not they will be sorted.
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
     pub fn new(axes: Vec<Axis>, content: Option<ArrayD<f32>>) -> Fallible<Self> {
+        if axes.is_empty() {
+            return Err(StoiError::MisalignedAxes("Patches must have at least one axis".into()));
+        }
         match content {
             None => {
                 // They have not provided content; we must allocate
@@ -298,6 +304,76 @@ impl Patch {
             target.apply(operand)?;
         }
         Ok(target)
+    }
+
+    /// Split a patch in half if it's larger than it probably should be.
+    /// 
+    /// This 
+    ///
+    /// Accepts:
+    ///     long_axis: the global axis to split in half
+    ///
+    /// Returns:
+    ///     Either: A vec with one element, which is a Cow::Borrowed(&self)
+    ///     Or: A vec with 2+ elements, which are all Cow::Owned(Patch)
+    pub fn maybe_split(&self, global_long_axis: &Axis) -> Fallible<Vec<Cow<Patch>>> {
+        if let Some((long_ax_ix, long_axis)) = self.axes().iter().enumerate().find(|a| a.1.name == global_long_axis.name) {
+            if self.dense.len() < 4 << 20 {
+                // Looks good to me
+                Ok(vec![Cow::Borrowed(&self)])
+            } else {
+                // This is a heuristic and it could use more serious study
+                let long_axis_labelset: HashMap<Label, usize> = long_axis
+                    .labels()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(a, b)| (b, a))
+                    .collect();
+    
+                let global_locations = global_long_axis
+                    .labels()
+                    .iter()
+                    .filter_map(|global_label| long_axis_labelset.get(global_label)).copied()
+                    .collect_vec();
+    
+                if global_locations.len() < long_axis_labelset.len() {
+                    return Err(StoiError::MisalignedAxes(
+                        "Patch contains labels not present in the global axis. 
+                        Always union global axes against patch axes before splitting a patch,
+                        because otherwise it's not clear what the Patch's bounding box would be."
+                            .into(),
+                    ));
+                }
+    
+                // The important part - split the long axis in half according to the global axis order
+                let (left_patch_indices, right_patch_indices) =
+                    global_locations.split_at(global_locations.len() / 2);
+    
+                let patches = [left_patch_indices, right_patch_indices][..]
+                    .into_iter()
+                    .map(|indices| {
+                        let mut axes = self.axes.clone();
+                        // Replace the long axis
+                        axes[long_ax_ix] = Axis::new_unchecked(
+                            &long_axis.name,
+                            indices
+                                .iter()
+                                .map(|ix| long_axis.labels()[*ix])
+                                .collect_vec(),
+                        );
+                        // Slice the patch
+                        Cow::Owned(Patch::new(
+                            axes,
+                            Some(self.content().select(nd::Axis(long_ax_ix), indices)),
+                        ).unwrap())
+                    })
+                    .collect_vec();
+                Ok(patches)
+            }
+        } else {
+            return Err(StoiError::MisalignedAxes("Patch doesn't contain the global axis provided".into()));
+        }
     }
 
     /// Possibly compact the patch, removing unused labels
