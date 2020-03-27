@@ -1,7 +1,7 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
 use crate::{
-    merge_bounding_boxes, Axis, AxisSegment, AxisSelection, BoundingBox, Fallible, Label, Patch,
-    PatchID, PatchRef, QuiltDetails, StoiError,
+    Axis, AxisSegment, AxisSelection, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef,
+    QuiltDetails, StoiError,
 };
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
@@ -71,6 +71,8 @@ impl<'t> SQLiteTransaction<'t> {
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
     fn put_patch(&self, comm_id: i64, pat: &Patch, bounding_box: BoundingBox) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
+        // Note - you need to compact here, quite late, because it needs to be after the Axes are updated.
+        // That's because 
         let pat = pat.compact();
         self.txn.execute(
             "INSERT OR REPLACE INTO Patch(
@@ -85,7 +87,7 @@ impl<'t> SQLiteTransaction<'t> {
             &[
                 &patch_id as &dyn ToSql,
                 &comm_id,
-                &(pat.len() as i64),
+                &(4 * pat.len() as i64),
                 &(bounding_box[0].0 as i64),
                 &(bounding_box[0].1 as i64),
                 &(bounding_box[1].0 as i64),
@@ -415,24 +417,21 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 // Split the patch if necessary
                 let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
 
-                let long_axis = new_large_patch.axes()
+                let long_axis = new_large_patch
+                    .axes()
                     .iter()
                     .max_by_key(|ax| ax.labels().len())
                     .unwrap(); // <- Patch::new() checks for at least one axis
-                // Replace the patch axis for the global axis by that name
+                               // Replace the patch axis for the global axis by that name
                 let long_axis = self.get_axis(&long_axis.name)?;
-        
+
                 for new_patch in new_large_patch.maybe_split(long_axis)? {
                     // Add each new patch
                     let bbox = self.get_bounding_box(&new_patch)?;
-                    self.put_patch(
-                        comm_id,
-                        &new_patch,
-                        bbox
-                    )?;
+                    self.put_patch(comm_id, &new_patch, bbox)?;
                 }
-                
             } else {
+                // TODO: Look at splitting before push
                 self.put_patch(comm_id, pat, new_bounding_box)?;
             };
         }

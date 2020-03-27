@@ -1,7 +1,7 @@
 use crate::Fallible;
 use std::convert::TryFrom;
 
-use crate::{Catalog, Patch, PatchID};
+use crate::{Catalog, Patch};
 
 /// Metadata about a quilt
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]

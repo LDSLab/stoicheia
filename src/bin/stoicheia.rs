@@ -50,7 +50,7 @@ fn get_patch(
     catalog: State<Arc<Catalog>>,
     quilt_name: String,
     tag: String,
-    patch_request: Json<PatchRequest>,
+    patch_request: Json<Vec<AxisSelection>>,
 ) -> Fallible<Json<Patch>> {
     Ok(Json(catalog.fetch(
         &quilt_name,

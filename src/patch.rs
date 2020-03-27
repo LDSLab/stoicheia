@@ -1,10 +1,9 @@
-use crate::catalog::StorageTransaction;
 use crate::{Axis, Fallible, Label, StoiError};
 use itertools::Itertools;
 use ndarray as nd;
 use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 
 /// A tensor with labeled axes
@@ -38,7 +37,9 @@ impl Patch {
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
     pub fn new(axes: Vec<Axis>, content: Option<ArrayD<f32>>) -> Fallible<Self> {
         if axes.is_empty() {
-            return Err(StoiError::MisalignedAxes("Patches must have at least one axis".into()));
+            return Err(StoiError::MisalignedAxes(
+                "Patches must have at least one axis".into(),
+            ));
         }
         match content {
             None => {
@@ -307,8 +308,8 @@ impl Patch {
     }
 
     /// Split a patch in half if it's larger than it probably should be.
-    /// 
-    /// This 
+    ///
+    /// This
     ///
     /// Accepts:
     ///     long_axis: the global axis to split in half
@@ -317,7 +318,12 @@ impl Patch {
     ///     Either: A vec with one element, which is a Cow::Borrowed(&self)
     ///     Or: A vec with 2+ elements, which are all Cow::Owned(Patch)
     pub fn maybe_split(&self, global_long_axis: &Axis) -> Fallible<Vec<Cow<Patch>>> {
-        if let Some((long_ax_ix, long_axis)) = self.axes().iter().enumerate().find(|a| a.1.name == global_long_axis.name) {
+        if let Some((long_ax_ix, long_axis)) = self
+            .axes()
+            .iter()
+            .enumerate()
+            .find(|a| a.1.name == global_long_axis.name)
+        {
             if self.dense.len() < 4 << 20 {
                 // Looks good to me
                 Ok(vec![Cow::Borrowed(&self)])
@@ -330,13 +336,14 @@ impl Patch {
                     .enumerate()
                     .map(|(a, b)| (b, a))
                     .collect();
-    
+
                 let global_locations = global_long_axis
                     .labels()
                     .iter()
-                    .filter_map(|global_label| long_axis_labelset.get(global_label)).copied()
+                    .filter_map(|global_label| long_axis_labelset.get(global_label))
+                    .copied()
                     .collect_vec();
-    
+
                 if global_locations.len() < long_axis_labelset.len() {
                     return Err(StoiError::MisalignedAxes(
                         "Patch contains labels not present in the global axis. 
@@ -345,11 +352,11 @@ impl Patch {
                             .into(),
                     ));
                 }
-    
+
                 // The important part - split the long axis in half according to the global axis order
                 let (left_patch_indices, right_patch_indices) =
                     global_locations.split_at(global_locations.len() / 2);
-    
+
                 let patches = [left_patch_indices, right_patch_indices][..]
                     .into_iter()
                     .map(|indices| {
@@ -363,16 +370,21 @@ impl Patch {
                                 .collect_vec(),
                         );
                         // Slice the patch
-                        Cow::Owned(Patch::new(
-                            axes,
-                            Some(self.content().select(nd::Axis(long_ax_ix), indices)),
-                        ).unwrap())
+                        Cow::Owned(
+                            Patch::new(
+                                axes,
+                                Some(self.content().select(nd::Axis(long_ax_ix), indices)),
+                            )
+                            .unwrap(),
+                        )
                     })
                     .collect_vec();
                 Ok(patches)
             }
         } else {
-            return Err(StoiError::MisalignedAxes("Patch doesn't contain the global axis provided".into()));
+            return Err(StoiError::MisalignedAxes(
+                "Patch doesn't contain the global axis provided".into(),
+            ));
         }
     }
 
@@ -616,7 +628,6 @@ impl PatchBuilder {
 #[cfg(test)]
 mod test {
     use crate::*;
-    use ndarray as nd;
 
     #[test]
     fn patch_1d_apply_total_overlap_same_order() {
