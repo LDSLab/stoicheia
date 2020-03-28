@@ -22,6 +22,8 @@ pub enum StoiError {
     ImpossibleError(#[from] std::convert::Infallible),
     #[error("failed to create an array from a slice (probably a bounding box)")]
     ArrayTryFromSliceError(#[from] std::array::TryFromSliceError),
+    #[error("general IO error")]
+    IOError(#[from] std::io::Error)
 }
 
 pub type Fallible<T> = Result<T, StoiError>;

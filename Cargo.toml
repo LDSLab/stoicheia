@@ -29,6 +29,7 @@ num-traits = "0.2.11"
 chrono = "0.4.10"
 brotli = "3.3.0"
 lazy_static = "1.4.0"
+lz4 = "1.23.1"
 
 
 [features]

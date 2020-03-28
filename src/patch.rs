@@ -525,6 +525,14 @@ impl Patch {
 
                 bincode::serialize_into(&mut brotli_writer, &self)?;
                 Ok(())
+            },
+            PatchCompressionType::LZ4 { quality } => {
+                let mut lz4_writer = lz4::EncoderBuilder::new()
+                    .level(quality)
+                    .build(&mut buffer)?;
+                
+                bincode::serialize_into(&mut lz4_writer, &self)?;
+                Ok(())
             }
         }
     }
@@ -553,6 +561,10 @@ impl Patch {
             PatchCompressionType::Brotli { quality: _ } => {
                 let brotli_reader = brotli::Decompressor::new(buffer, 4096);
                 Ok(bincode::deserialize_from(brotli_reader)?)
+            },
+            PatchCompressionType::LZ4 { quality: _ } => {
+                let lz4_reader = lz4::Decoder::new(buffer)?;
+                Ok(bincode::deserialize_from(lz4_reader)?)
             }
         }
     }
@@ -571,6 +583,7 @@ struct PatchTag {
 pub enum PatchCompressionType {
     Off,
     Brotli { quality: u32 },
+    LZ4 { quality: u32 }
 }
 /// Things you might have done to the patch to try to save space
 /// There aren't any yet but it could happen and this lets us be compatible

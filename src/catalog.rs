@@ -295,14 +295,14 @@ pub trait StorageTransaction {
                         .unwrap_or(axis.len() - start_ix);
                 (
                     Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
-                    vec![(start_ix, end_ix)],
+                    vec![(start_ix, end_ix+1)],
                 )
             }
             AxisSelection::StorageSlice(start_ix, end_ix) => {
                 let axis = self.get_axis(&name)?;
                 let lab = axis.labels();
                 (
-                    Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
+                    Axis::new(&axis.name, Vec::from(&lab[start_ix..end_ix]))?,
                     vec![(start_ix, end_ix)],
                 )
             }
@@ -525,12 +525,19 @@ mod tests {
         let master = Array2::from_shape_fn((w, h), |(x, y)| (xs[x] * ys[y]).max(0.0));
         let mut current_state = Array2::zeros((w, h));
 
-        let catalog = Catalog::connect("").unwrap();
+        let catalog = Catalog::connect("test-storage.db").unwrap();
         catalog.create_quilt("quilt", &["x", "y"], true).unwrap();
-        catalog.union_axis(&Axis::range("x", 0..1+w as i64)).unwrap();
-        catalog.union_axis(&Axis::range("y", 0..1+h as i64)).unwrap();
+        catalog.union_axis(&Axis::range("x", 0..w as i64)).unwrap();
+        catalog.union_axis(&Axis::range("y", 0..h as i64)).unwrap();
 
-        for _ in 0..32 {
+        for _ in 0..256 {
+            // Get slices out of the generated matrix and put them into the empty matrix,
+            // then check them against the catalog.
+            // To make this more fun, the first axis uses inclusive label based indexing,
+            // but the second axis uses open-closed storage-index based indexing.
+            // As long as we provide the axes first, this should be fine.
+
+            // All four of px, pxe, py, pye use [x,y) inclusiveness
             let mut t = thread_rng();
             let px = t.gen_range(0, w);
             let py = t.gen_range(0, h);
@@ -546,6 +553,7 @@ mod tests {
                 .slice_mut(s![px..pxe, py..pye])
                 .assign(&content);
 
+            // These two ranges are [x,y)
             let patch = Patch::build()
                 .axis_range("x", px as i64..pxe as i64)
                 .axis_range("y", py as i64..pye as i64)
@@ -555,11 +563,12 @@ mod tests {
             catalog
                 .commit("quilt", "latest", "latest", "hi", &[&patch])
                 .unwrap();
-            
+
             let fetched_patch = catalog.fetch(
                 "quilt", "latest", vec![
+                    // Only label slice is inclusive
                     AxisSelection::LabelSlice(px as i64, -1+pxe as i64),
-                    AxisSelection::StorageSlice(py, pye-1)
+                    AxisSelection::StorageSlice(py, pye)
                 ]
             ).unwrap();
             assert_abs_diff_eq!(

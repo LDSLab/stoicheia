@@ -2,10 +2,12 @@
 //! Sharded tensor storage and retrieval
 #[macro_use]
 extern crate serde_derive;
-#[macro_use]
+#[allow(unused_imports)]
+#[macro_use] // Macro used in tests
 extern crate ndarray as nd;
 extern crate rusqlite as sql;
-#[macro_use]
+#[allow(unused_imports)]
+#[macro_use] // Macro used in tests
 extern crate approx; // for approximately eq for f32/f64
 
 mod patch;
