@@ -1,10 +1,19 @@
 use crate::{Axis, Fallible, Label, StoiError};
+use arrayvec::ArrayVec;
 use itertools::Itertools;
 use ndarray as nd;
-use ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
+use ndarray::{
+    Array, Array4, ArrayD, ArrayView, ArrayView4, ArrayViewD, ArrayViewMut, ArrayViewMut4,
+    ArrayViewMutD,
+};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::{
+    convert::TryInto,
+    io::{Read, Write},
+};
+
+type A4D = ArrayVec<[usize; 4]>;
 
 /// A tensor with labeled axes
 ///
@@ -24,7 +33,7 @@ pub struct Patch {
     /// Names and labels of the axes
     axes: Vec<Axis>,
     /// Tensor containing all the elements of this patch
-    dense: ArrayD<f32>,
+    dense: Array4<f32>,
     // TODO: Bounding box for this patch on the global axes.
     // - Includes an ID for the catalog, to prevent using them with the wrong catalog
     // - If present, then the axes also match the order of the global axes
@@ -33,7 +42,68 @@ pub struct Patch {
 impl Patch {
     /// Create a new patch from an array and some labels
     ///
-    /// The labels must be in sorted order (within the patch), if not they will be sorted.
+    /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
+    fn new_4d(axes: Vec<Axis>, content: Option<Array4<f32>>) -> Fallible<Self> {
+        if axes.len() > 4 {
+            return Err(StoiError::MisalignedAxes(
+                "Patch must have up to 4 axes".into(),
+            ));
+        }
+
+        match content {
+            None => {
+                // They have not provided content; we must allocate
+                let dims = axes.iter().map(|a| a.len()).collect_vec();
+                let dims_size: usize = dims.iter().product::<usize>();
+                if dims_size > 256 << 20 {
+                    return Err(StoiError::TooLarge(
+                        "Patches must be 256 million elements or less (1GB of 32bit floats)",
+                    ));
+                }
+                // Add empty dimensions where necessary
+                while dims.len() < 4 {
+                    dims.push(1);
+                }
+
+                Ok(Self {
+                    axes,
+                    dense: Array4::from_elem((dims[0], dims[1], dims[2], dims[3]), std::f32::NAN),
+                })
+            }
+            Some(dense) => {
+                // They provided some content
+                if axes.len() > dense.ndim() {
+                    return Err(StoiError::InvalidValue(
+                        "Too many labeled axes for the axes in the dense tensor.",
+                    ));
+                }
+                if !axes
+                    .iter()
+                    .zip(dense.axes())
+                    .all(|(ax, d_ax)| ax.len() == d_ax.len())
+                {
+                    return Err(StoiError::InvalidValue(
+                        "The shape of the axis labels doesn't match the shape of the dense tensor.",
+                    ));
+                }
+                let dims = dense.shape().to_vec();
+                // Add empty dimensions where necessary
+                while dims.len() < 4 {
+                    dims.push(1);
+                }
+
+                Ok(Self {
+                    axes,
+                    dense: dense
+                        .into_shape((dims[0], dims[1], dims[2], dims[3]))
+                        .unwrap(), // shape error is impossible here
+                })
+            }
+        }
+    }
+
+    /// Create a new patch from an array and some labels
+    ///
     /// The axes dimensions must match the dense array's dimensions, otherwise it will error.
     pub fn new(axes: Vec<Axis>, content: Option<ArrayD<f32>>) -> Fallible<Self> {
         if axes.is_empty() {
@@ -41,18 +111,25 @@ impl Patch {
                 "Patches must have at least one axis".into(),
             ));
         }
+
         match content {
             None => {
                 // They have not provided content; we must allocate
                 let dims = axes.iter().map(|a| a.len()).collect_vec();
-                if dims.iter().product::<usize>() > 256 << 20 {
+                let dims_size: usize = dims.iter().product::<usize>();
+                if dims_size > 256 << 20 {
                     return Err(StoiError::TooLarge(
                         "Patches must be 256 million elements or less (1GB of 32bit floats)",
                     ));
                 }
+                // Add empty dimensions where necessary
+                while dims.len() < 4 {
+                    dims.push(1);
+                }
+
                 Ok(Self {
                     axes,
-                    dense: ArrayD::from_elem(dims, std::f32::NAN),
+                    dense: Array4::from_elem((dims[0], dims[1], dims[2], dims[3]), std::f32::NAN),
                 })
             }
             Some(dense) => {
@@ -71,7 +148,18 @@ impl Patch {
                         "The shape of the axis labels doesn't match the shape of the dense tensor.",
                     ));
                 }
-                Ok(Self { axes, dense })
+                let dims = dense.shape().to_vec();
+                // Add empty dimensions where necessary
+                while dims.len() < 4 {
+                    dims.push(1);
+                }
+
+                Ok(Self {
+                    axes,
+                    dense: dense
+                        .into_shape((dims[0], dims[1], dims[2], dims[3]))
+                        .unwrap(), // shape error is impossible here
+                })
             }
         }
     }
@@ -82,6 +170,8 @@ impl Patch {
     }
 
     /// How many dimensions in this patch
+    ///
+    /// It's always stored as 4D but this is how many it logically has
     pub fn ndim(&self) -> usize {
         self.dense.ndim()
     }
@@ -109,15 +199,17 @@ impl Patch {
         //
 
         // For every axis in self..
-        let axis_shuffle: Vec<usize> = self
+        let axis_shuffle = self
             .axes
             .iter()
             .map(|self_axis|
             // Look it up in pat
             pat.axes.iter().position(|pat_axis| self_axis.name == pat_axis.name).unwrap())
-            .collect();
+            .collect::<A4D>()
+            .into_inner()
+            .unwrap();
         // Now roll the tensor if necessary
-        let shard = pat.dense.view().permuted_axes(&axis_shuffle[..]);
+        let shard = pat.dense.view().permuted_axes(axis_shuffle);
         let shard_axes = axis_shuffle
             .iter()
             .map(|&ax_ix| &pat.axes[ax_ix])
@@ -133,8 +225,10 @@ impl Patch {
             .iter()
             .zip(shard.shape().iter())
             .map(|(&x, &y)| x.max(y))
-            .collect_vec();
-        let mut union = ArrayD::from_elem(&max_shape[..], std::f32::NAN);
+            .collect::<A4D>()
+            .into_inner()
+            .unwrap();
+        let mut union = Array4::from_elem(max_shape, std::f32::NAN);
 
         // 2: Precompute the axes so we don't search on every element
         //    This also helps for optimizing the rectangle to copy
@@ -201,8 +295,8 @@ impl Patch {
     ///
     /// Make congruent slices on both sides and then assign()'s
     fn merge_slice<F: Fn(&mut f32, &f32)>(
-        read: ArrayViewD<f32>,
-        write: ArrayViewMutD<f32>,
+        read: ArrayView4<f32>,
+        write: ArrayViewMut4<f32>,
         size: &[usize],
         merge: F,
     ) {
@@ -230,12 +324,14 @@ impl Patch {
     /// As a result, you can make multiple copies of the each plane if you want.
     ///
     /// Use std::usize::MAX to skip a plane
-    fn shuffle_pull(
-        read: &ArrayViewD<f32>,
-        write: &mut ArrayViewMutD<f32>,
+    fn shuffle_pull<D>(
+        read: &ArrayView<f32, D>,
+        write: &mut ArrayViewMut<f32, D>,
         axis: nd::Axis,
         shuffle: &[usize],
-    ) {
+    ) where
+        D: nd::Dimension + nd::RemoveAxis,
+    {
         // Note: it's totally OK if some of the patch is not written
         // I'm not sure what the preference would be if shuffle is larger
         // so let's just jump out then
@@ -255,21 +351,55 @@ impl Patch {
     /// As a result, you can make multiple copies of the each plane if you want.
     ///
     /// Use std::usize::MAX to skip a plane
-    ///
-    /// The results will be in "original" after this function completes
-    fn shuffle_pull_ndim(mut original: ArrayD<f32>, shuffle: &[Vec<usize>]) -> ArrayD<f32> {
+    fn shuffle_pull_4d(mut original: Array4<f32>, shuffle: &[Vec<usize>]) -> Array4<f32> {
         assert_eq!(original.ndim(), shuffle.len());
         let mut scratch = original.clone();
-        for ax_ix in 0..original.ndim() {
-            Self::shuffle_pull(
-                &original.view(),
-                &mut scratch.view_mut(),
-                nd::Axis(ax_ix),
-                &shuffle[ax_ix],
-            );
-            std::mem::swap(&mut original, &mut scratch);
+        Self::shuffle_pull_ndim_recursive(
+            &mut original.view_mut(),
+            &mut scratch.view_mut(),
+            shuffle,
+        );
+        scratch
+    }
+
+    /// Shuffle each plane of all tensor axes, with possible replication
+    ///
+    /// "pull" here means there is one index for each write plane.
+    /// As a result, you can make multiple copies of the each plane if you want.
+    ///
+    /// Use std::usize::MAX to skip a plane
+    ///
+    /// The results will be in "original" after this function completes
+    fn shuffle_pull_ndim_recursive<D>(
+        read: &mut ArrayViewMut<f32, D>,
+        write: &mut ArrayViewMut<f32, D>,
+        shuffles: &[Vec<usize>],
+    ) where
+        D: nd::Dimension + nd::RemoveAxis
+    {
+        assert_eq!(read.ndim(), shuffles.len()); // Shuffles must match read tensor
+        assert_eq!(write.ndim(), shuffles.len()); // Shuffles must match write tensor
+        assert!(shuffles.len() > 0); // Must have at least one axis
+        if shuffles.len() == 1 {
+            // Last dimension: simple copy
+            Self::shuffle_pull(&read.view(), write, nd::Axis(0), &shuffles[0]);
+        } else {
+            // Not last dimension: recursive copy
+            let ax0 = nd::Axis(0);
+            let shuf0 = &shuffles[0];
+            assert!(shuf0.len() <= write.len_of(ax0));
+            for write_index in 0..shuf0.len() {
+                if shuf0[write_index] != std::usize::MAX {
+                    Self::shuffle_pull_ndim_recursive(
+                        &mut read.index_axis_mut(ax0, shuf0[write_index]),
+                        &mut write.index_axis_mut(ax0, write_index),
+                        &shuffles[1..],
+                    )
+                }
+            }
         }
-        original
+        //std::mem::swap(&mut original, &mut scratch);
+        //original
     }
 
     /// Merge two patches together into a larger patch
@@ -460,7 +590,7 @@ impl Patch {
                     )
                 })
                 .collect_vec();
-            Cow::Owned(Patch::new(new_axes, Some(dense.into_owned())).unwrap())
+            Cow::Owned(Patch::new_4d(new_axes, Some(dense.into_owned())).unwrap())
         } else {
             Cow::Borrowed(self)
         }
@@ -468,17 +598,17 @@ impl Patch {
 
     /// Render the patch as a dense array. This always copies the data.
     pub fn to_dense(&self) -> nd::ArrayD<f32> {
-        self.dense.clone()
+        self.dense.clone().into_dyn()
     }
 
     /// Get a reference to the content
     pub fn content(&self) -> nd::ArrayViewD<f32> {
-        self.dense.view()
+        self.dense.view().into_dyn()
     }
 
     /// Get a mutable reference to the content
     pub fn content_mut(&mut self) -> nd::ArrayViewMutD<f32> {
-        self.dense.view_mut()
+        self.dense.view_mut().into_dyn()
     }
 
     /// Get a shared reference to the axes within
@@ -525,12 +655,12 @@ impl Patch {
 
                 bincode::serialize_into(&mut brotli_writer, &self)?;
                 Ok(())
-            },
+            }
             PatchCompressionType::LZ4 { quality } => {
                 let mut lz4_writer = lz4::EncoderBuilder::new()
                     .level(quality)
                     .build(&mut buffer)?;
-                
+
                 bincode::serialize_into(&mut lz4_writer, &self)?;
                 Ok(())
             }
@@ -561,7 +691,7 @@ impl Patch {
             PatchCompressionType::Brotli { quality: _ } => {
                 let brotli_reader = brotli::Decompressor::new(buffer, 4096);
                 Ok(bincode::deserialize_from(brotli_reader)?)
-            },
+            }
             PatchCompressionType::LZ4 { quality: _ } => {
                 let lz4_reader = lz4::Decoder::new(buffer)?;
                 Ok(bincode::deserialize_from(lz4_reader)?)
@@ -583,7 +713,7 @@ struct PatchTag {
 pub enum PatchCompressionType {
     Off,
     Brotli { quality: u32 },
-    LZ4 { quality: u32 }
+    LZ4 { quality: u32 },
 }
 /// Things you might have done to the patch to try to save space
 /// There aren't any yet but it could happen and this lets us be compatible

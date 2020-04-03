@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRef, Quilt,
-    QuiltDetails, StoiError,
+    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRef, Quilt, QuiltDetails,
+    StoiError,
 };
 
 pub struct Catalog {
@@ -103,7 +103,12 @@ impl Catalog {
     ///     (which is the order the labels are specified in the axis, not in your request)
     /// - You can request elements you haven't initialized yet, and you'll get NANs.
     /// - You can only request patches up to 1 GB, as a safety valve
-    pub fn fetch(&self, quilt_name: &str, tag: &str, request: Vec<AxisSelection>) -> Fallible<Patch> {
+    pub fn fetch(
+        &self,
+        quilt_name: &str,
+        tag: &str,
+        request: Vec<AxisSelection>,
+    ) -> Fallible<Patch> {
         self.storage.txn()?.fetch(quilt_name, tag, request)
     }
 
@@ -295,7 +300,7 @@ pub trait StorageTransaction {
                         .unwrap_or(axis.len() - start_ix);
                 (
                     Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
-                    vec![(start_ix, end_ix+1)],
+                    vec![(start_ix, end_ix + 1)],
                 )
             }
             AxisSelection::StorageSlice(start_ix, end_ix) => {
@@ -331,7 +336,12 @@ pub trait StorageTransaction {
     ///     (which is the order the labels are specified in the axis, not in your request)
     /// - You can request elements you haven't initialized yet, and you'll get NANs.
     /// - You can only request patches up to 1 GB, as a safety valve
-    fn fetch(&mut self, quilt_name: &str, tag: &str, mut request: Vec<AxisSelection>) -> Fallible<Patch> {
+    fn fetch(
+        &mut self,
+        quilt_name: &str,
+        tag: &str,
+        mut request: Vec<AxisSelection>,
+    ) -> Fallible<Patch> {
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
                 "Patches must have at least one axis",
@@ -544,9 +554,15 @@ mod tests {
             let pxe = t.gen_range(px, w.min(px + 1000));
             let pye = t.gen_range(py, h.min(py + 1000));
 
-            println!("px {}, pxe {}, py {}, pye {}, w {}, h {}",
-                px, pxe, py, pye, pxe-px, pye-py);
-
+            println!(
+                "px {}, pxe {}, py {}, pye {}, w {}, h {}",
+                px,
+                pxe,
+                py,
+                pye,
+                pxe - px,
+                pye - py
+            );
 
             let content = master.slice(s![px..pxe, py..pye]);
             current_state
@@ -564,17 +580,18 @@ mod tests {
                 .commit("quilt", "latest", "latest", "hi", &[&patch])
                 .unwrap();
 
-            let fetched_patch = catalog.fetch(
-                "quilt", "latest", vec![
-                    // Only label slice is inclusive
-                    AxisSelection::LabelSlice(px as i64, -1+pxe as i64),
-                    AxisSelection::StorageSlice(py, pye)
-                ]
-            ).unwrap();
-            assert_abs_diff_eq!(
-                patch.content(),
-                fetched_patch.content()
-            )
+            let fetched_patch = catalog
+                .fetch(
+                    "quilt",
+                    "latest",
+                    vec![
+                        // Only label slice is inclusive
+                        AxisSelection::LabelSlice(px as i64, -1 + pxe as i64),
+                        AxisSelection::StorageSlice(py, pye),
+                    ],
+                )
+                .unwrap();
+            assert_abs_diff_eq!(patch.content(), fetched_patch.content())
         }
     }
 }

@@ -72,7 +72,7 @@ impl<'t> SQLiteTransaction<'t> {
     fn put_patch(&self, comm_id: i64, pat: &Patch, bounding_box: BoundingBox) -> Fallible<PatchID> {
         let patch_id = PatchID(self.gen_id());
         // Note - you need to compact here, quite late, because it needs to be after the Axes are updated.
-        // That's because 
+        // That's because
         let pat = pat.compact();
         self.txn.execute(
             "INSERT OR REPLACE INTO Patch(

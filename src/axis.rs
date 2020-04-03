@@ -39,7 +39,7 @@ impl Axis {
     }
 
     /// Create an axis from a consecutive range, useful for tests
-    pub fn range<T: ToString, R:IntoIterator<Item=i64>>(name: T, range: R) -> Axis {
+    pub fn range<T: ToString, R: IntoIterator<Item = i64>>(name: T, range: R) -> Axis {
         Axis {
             name: name.to_string(),
             labels: range.into_iter().collect(),
