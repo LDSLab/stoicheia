@@ -28,13 +28,9 @@ impl SQLiteConnection {
     /// SQLite treats the path ":memory:" as special and will only create an in-memory database
     /// in that case. See SQLite documentation for more details
     pub fn connect(base: PathBuf) -> Fallible<Arc<Self>> {
-        let mut conn = rusqlite::Connection::open(base)?;
-        {
-            let txn = conn.transaction()?;
-            txn.busy_timeout(std::time::Duration::from_secs(5))?;
-            txn.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
-            txn.commit()?;
-        }
+        let conn = rusqlite::Connection::open(base)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch(include_str!("sqlite_catalog_schema.sql"))?;
         Ok(Arc::new(Self {
             conn: Mutex::new(conn),
         }))

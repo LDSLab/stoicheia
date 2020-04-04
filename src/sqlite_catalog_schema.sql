@@ -1,7 +1,7 @@
 -- This script gets run every time a new connection is made, so it should be idempotent.
 -- PRAGMA journal_mode=WAL; -- Because we'd like better concurrency during writes
 -- PRAGMA page_size=16384;  -- Because we store huge blobs
--- PRAGMA synchronous=OFF;  -- To improve transaction speeds but this should be configurable
+PRAGMA synchronous=OFF;  -- To improve transaction speeds but this should be configurable
 -- PRAGMA auto_vacuum=FULL; -- Minimize disk usage, but at the expense of fragmentation
 
 CREATE TABLE IF NOT EXISTS Quilt(
