@@ -725,6 +725,7 @@ impl Patch {
                 );
 
                 bincode::serialize_into(&mut brotli_writer, &self)?;
+                brotli_writer.flush()?;
                 Ok(())
             }
             PatchCompressionType::LZ4 { quality } => {
@@ -733,6 +734,8 @@ impl Patch {
                     .build(&mut buffer)?;
 
                 bincode::serialize_into(&mut lz4_writer, &self)?;
+                lz4_writer.finish().1?;
+
                 Ok(())
             }
         }

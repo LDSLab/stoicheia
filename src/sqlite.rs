@@ -3,6 +3,7 @@ use crate::{
     Axis, AxisSegment, AxisSelection, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef,
     QuiltDetails, StoiError,
 };
+use crate::patch::PatchCompressionType;
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::{HashMap, HashSet};
@@ -101,7 +102,7 @@ impl<'t> SQLiteTransaction<'t> {
         // TODO: If this serialize fails it will deadlock the connection by not rolling back
         self.txn.execute(
             "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
-            &[&patch_id as &dyn ToSql, &pat.serialize(None)?],
+            &[&patch_id as &dyn ToSql, &pat.serialize(Some(PatchCompressionType::LZ4{quality: 0}))?],
         )?;
         Ok(patch_id)
     }
