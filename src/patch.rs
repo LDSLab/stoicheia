@@ -3,15 +3,11 @@ use arrayvec::ArrayVec;
 use itertools::Itertools;
 use ndarray as nd;
 use ndarray::{
-    Array, Array4, ArrayD, ArrayView, ArrayView4, ArrayViewD, ArrayViewMut, ArrayViewMut4,
-    ArrayViewMutD,
+    Array4, ArrayD, ArrayView, ArrayView4, ArrayViewMut, ArrayViewMut4,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::{
-    convert::TryInto,
-    io::{Read, Write},
-};
+use std::io::{Read, Write};
 
 type A4D = ArrayVec<[usize; 4]>;
 
@@ -53,7 +49,7 @@ impl Patch {
         match content {
             None => {
                 // They have not provided content; we must allocate
-                let dims = axes.iter().map(|a| a.len()).collect_vec();
+                let mut dims = axes.iter().map(|a| a.len()).collect_vec();
                 let dims_size: usize = dims.iter().product::<usize>();
                 if dims_size > 256 << 20 {
                     return Err(StoiError::TooLarge(
@@ -86,7 +82,7 @@ impl Patch {
                         "The shape of the axis labels doesn't match the shape of the dense tensor.",
                     ));
                 }
-                let dims = dense.shape().to_vec();
+                let mut dims = dense.shape().to_vec();
                 // Add empty dimensions where necessary
                 while dims.len() < 4 {
                     dims.push(1);
@@ -115,7 +111,7 @@ impl Patch {
         match content {
             None => {
                 // They have not provided content; we must allocate
-                let dims = axes.iter().map(|a| a.len()).collect_vec();
+                let mut dims = axes.iter().map(|a| a.len()).collect_vec();
                 let dims_size: usize = dims.iter().product::<usize>();
                 if dims_size > 256 << 20 {
                     return Err(StoiError::TooLarge(
@@ -148,7 +144,7 @@ impl Patch {
                         "The shape of the axis labels doesn't match the shape of the dense tensor.",
                     ));
                 }
-                let dims = dense.shape().to_vec();
+                let mut dims = dense.shape().to_vec();
                 // Add empty dimensions where necessary
                 while dims.len() < 4 {
                     dims.push(1);
@@ -173,7 +169,7 @@ impl Patch {
     ///
     /// It's always stored as 4D but this is how many it logically has
     pub fn ndim(&self) -> usize {
-        self.dense.ndim()
+        self.axes.len()
     }
 
     /// Apply another patch to this one, changing `self` where it overlaps with `pat`.
@@ -198,21 +194,24 @@ impl Patch {
         // 1: Align the axes (cheap)
         //
 
-        // For every axis in self..
-        let axis_shuffle = self
-            .axes
-            .iter()
-            .map(|self_axis|
-            // Look it up in pat
-            pat.axes.iter().position(|pat_axis| self_axis.name == pat_axis.name).unwrap())
-            .collect::<A4D>()
-            .into_inner()
-            .unwrap();
+        // For each of the four axes, give the corresponding other axis
+        // Any missing axes are just 1's and don't have labels
+        let mut axis_shuffle = [0usize; 4];
+        for self_ax_ix in 0..4 {
+            axis_shuffle[self_ax_ix] = match self.axes.get(self_ax_ix) {
+                Some(self_axis) => pat
+                    .axes
+                    .iter()
+                    .position(|pat_axis| self_axis.name == pat_axis.name)
+                    .unwrap(),
+                None => self_ax_ix
+            };
+        }
         // Now roll the tensor if necessary
         let shard = pat.dense.view().permuted_axes(axis_shuffle);
         let shard_axes = axis_shuffle
             .iter()
-            .map(|&ax_ix| &pat.axes[ax_ix])
+            .filter_map(|&ax_ix| pat.axes.get(ax_ix))
             .collect_vec();
         // Get rid of the reference to pat because we will just confuse ourselves otherwise.
         // Because it's axes don't match self.
@@ -240,21 +239,25 @@ impl Patch {
         //              The index into pat of the corresponding label
         //              or else None
         let mut label_shuffles = vec![];
-        for ax_ix in 0..self.ndim() {
-            let pat_label_to_idx: HashMap<Label, usize> = shard_axes[ax_ix]
-                .labels()
-                .iter()
-                .copied()
-                .enumerate()
-                .map(|(i, l)| (l, i))
-                .collect();
-            label_shuffles.push(
-                self.axes[ax_ix]
+        for ax_ix in 0..4 {
+            if ax_ix < self.ndim() {
+                let pat_label_to_idx: HashMap<Label, usize> = shard_axes[ax_ix]
                     .labels()
                     .iter()
-                    .map(|l| *pat_label_to_idx.get(l).unwrap_or(&std::usize::MAX))
-                    .collect::<Vec<usize>>(),
-            );
+                    .copied()
+                    .enumerate()
+                    .map(|(i, l)| (l, i))
+                    .collect();
+                label_shuffles.push(
+                    self.axes[ax_ix]
+                        .labels()
+                        .iter()
+                        .map(|l| *pat_label_to_idx.get(l).unwrap_or(&std::usize::MAX))
+                        .collect::<Vec<usize>>(),
+                );
+            } else {
+                label_shuffles.push(vec![0]);
+            }
         }
 
         // 3. Shuffle the intersection into self-space and apply the patch
@@ -268,7 +271,7 @@ impl Patch {
                 *x = *y
             });
 
-            union = Self::shuffle_pull_ndim(union, &label_shuffles[..]);
+            union = self.shuffle_pull_ndim(union, &label_shuffles[..]);
 
             for (ax_ix, label_shuffle) in label_shuffles.iter().enumerate() {
                 for (self_idx, pat_idx) in label_shuffle.iter().enumerate() {
@@ -318,47 +321,42 @@ impl Patch {
         write_slice.zip_mut_with(&read_slice, merge);
     }
 
-    /// Copy (N-1)D planes, with possible replication
-    ///
-    /// "pull" here means there is one index for each write plane.
-    /// As a result, you can make multiple copies of the each plane if you want.
-    ///
-    /// Use std::usize::MAX to skip a plane
-    fn shuffle_pull<D>(
-        read: &ArrayView<f32, D>,
-        write: &mut ArrayViewMut<f32, D>,
-        axis: nd::Axis,
-        shuffle: &[usize],
-    ) where
-        D: nd::Dimension + nd::RemoveAxis,
-    {
-        // Note: it's totally OK if some of the patch is not written
-        // I'm not sure what the preference would be if shuffle is larger
-        // so let's just jump out then
-        assert!(shuffle.len() <= write.len_of(axis));
-        for write_index in 0..shuffle.len() {
-            if shuffle[write_index] != std::usize::MAX {
-                write
-                    .index_axis_mut(axis, write_index)
-                    .assign(&read.index_axis(axis, shuffle[write_index]));
-            }
-        }
-    }
-
     /// Shuffle each plane of all tensor axes, with possible replication
     ///
     /// "pull" here means there is one index for each write plane.
     /// As a result, you can make multiple copies of the each plane if you want.
     ///
     /// Use std::usize::MAX to skip a plane
-    fn shuffle_pull_4d(mut original: Array4<f32>, shuffle: &[Vec<usize>]) -> Array4<f32> {
-        assert_eq!(original.ndim(), shuffle.len());
+    fn shuffle_pull_ndim(&self, original: Array4<f32>, shuffles: &[Vec<usize>]) -> Array4<f32> {
+        assert!(shuffles.len() == original.ndim());
         let mut scratch = original.clone();
-        Self::shuffle_pull_ndim_recursive(
-            &mut original.view_mut(),
-            &mut scratch.view_mut(),
-            shuffle,
-        );
+        match self.ndim() {
+            4 => Self::shuffle_pull_4d(&original.view(), &mut scratch.view_mut(), &shuffles[..]),
+            3 => Self::shuffle_pull_3d(
+                &original.index_axis(nd::Axis(3), 0),
+                &mut scratch.index_axis_mut(nd::Axis(3), 0), 
+                &shuffles[..shuffles.len()-1]),
+            2 => Self::shuffle_pull_2d(
+                &original
+                    .index_axis(nd::Axis(3), 0)
+                    .index_axis(nd::Axis(2), 0),
+                &mut scratch
+                    .index_axis_mut(nd::Axis(3), 0)
+                    .index_axis_mut(nd::Axis(2), 0), 
+                &shuffles[..shuffles.len()-2]),
+            1 => Self::shuffle_pull_1d(
+                    &original
+                        .index_axis(nd::Axis(3), 0)
+                        .index_axis(nd::Axis(2), 0)
+                        .index_axis(nd::Axis(1), 0),
+                    &mut scratch
+                        .index_axis_mut(nd::Axis(3), 0)
+                        .index_axis_mut(nd::Axis(2), 0)
+                        .index_axis_mut(nd::Axis(1), 0), 
+                    &shuffles[0]),
+            _ => panic!("Invalid Patch! Can't have more than 4 dimensions!")
+        }
+        //original
         scratch
     }
 
@@ -370,36 +368,96 @@ impl Patch {
     /// Use std::usize::MAX to skip a plane
     ///
     /// The results will be in "original" after this function completes
-    fn shuffle_pull_ndim_recursive<D>(
-        read: &mut ArrayViewMut<f32, D>,
-        write: &mut ArrayViewMut<f32, D>,
+    fn shuffle_pull_4d(
+        read: &ArrayView<f32, nd::Ix4>,
+        write: &mut ArrayViewMut<f32, nd::Ix4>,
         shuffles: &[Vec<usize>],
-    ) where
-        D: nd::Dimension + nd::RemoveAxis
-    {
-        assert_eq!(read.ndim(), shuffles.len()); // Shuffles must match read tensor
-        assert_eq!(write.ndim(), shuffles.len()); // Shuffles must match write tensor
-        assert!(shuffles.len() > 0); // Must have at least one axis
-        if shuffles.len() == 1 {
-            // Last dimension: simple copy
-            Self::shuffle_pull(&read.view(), write, nd::Axis(0), &shuffles[0]);
-        } else {
-            // Not last dimension: recursive copy
-            let ax0 = nd::Axis(0);
-            let shuf0 = &shuffles[0];
-            assert!(shuf0.len() <= write.len_of(ax0));
-            for write_index in 0..shuf0.len() {
-                if shuf0[write_index] != std::usize::MAX {
-                    Self::shuffle_pull_ndim_recursive(
-                        &mut read.index_axis_mut(ax0, shuf0[write_index]),
-                        &mut write.index_axis_mut(ax0, write_index),
-                        &shuffles[1..],
-                    )
-                }
+    ) {
+        assert_eq!(shuffles.len(), 4);
+
+        // Not last dimension: recursive copy
+        let ax0 = nd::Axis(0);
+        let shuf0 = &shuffles[0];
+        assert!(shuf0.len() <= write.len_of(ax0));
+        for write_index in 0..shuf0.len() {
+            if shuf0[write_index] != std::usize::MAX {
+                Self::shuffle_pull_3d(
+                    &read.index_axis(ax0, shuf0[write_index]),
+                    &mut write.index_axis_mut(ax0, write_index),
+                    &shuffles[1..],
+                )
             }
         }
-        //std::mem::swap(&mut original, &mut scratch);
-        //original
+    }
+
+    /// Shuffle each plane of all tensor axes, with possible replication
+    /// see shuffle_pull_4d.
+    fn shuffle_pull_3d(
+        read: &ArrayView<f32, nd::Ix3>,
+        write: &mut ArrayViewMut<f32, nd::Ix3>,
+        shuffles: &[Vec<usize>],
+    ) {
+        assert_eq!(shuffles.len(), 3);
+
+        // Not last dimension: recursive copy
+        let ax0 = nd::Axis(0);
+        let shuf0 = &shuffles[0];
+        assert!(shuf0.len() <= write.len_of(ax0));
+        for write_index in 0..shuf0.len() {
+            if shuf0[write_index] != std::usize::MAX {
+                Self::shuffle_pull_2d(
+                    &read.index_axis(ax0, shuf0[write_index]),
+                    &mut write.index_axis_mut(ax0, write_index),
+                    &shuffles[1..],
+                )
+            }
+        }
+    }
+
+    /// Shuffle each plane of all tensor axes, with possible replication
+    /// see shuffle_pull_4d.
+    fn shuffle_pull_2d(
+        read: &ArrayView<f32, nd::Ix2>,
+        write: &mut ArrayViewMut<f32, nd::Ix2>,
+        shuffles: &[Vec<usize>],
+    ) {
+        assert_eq!(shuffles.len(), 2);
+
+        // Not last dimension: recursive copy
+        let ax0 = nd::Axis(0);
+        let shuf0 = &shuffles[0];
+        assert!(shuf0.len() <= write.len_of(ax0));
+        for write_index in 0..shuf0.len() {
+            if shuf0[write_index] != std::usize::MAX {
+                Self::shuffle_pull_1d(
+                    &read.index_axis(ax0, shuf0[write_index]),
+                    &mut write.index_axis_mut(ax0, write_index),
+                    &shuffles[1],
+                )
+            }
+        }
+    }
+
+    /// Copy (N-1)D planes, with possible replication
+    ///
+    /// "pull" here means there is one index for each write plane.
+    /// As a result, you can make multiple copies of the each plane if you want.
+    ///
+    /// Use std::usize::MAX to skip a plane
+    fn shuffle_pull_1d(
+        read: &ArrayView<f32, nd::Ix1>,
+        write: &mut ArrayViewMut<f32, nd::Ix1>,
+        shuffle: &[usize],
+    ) {
+        // Note: it's totally OK if some of the patch is not written
+        // I'm not sure what the preference would be if shuffle is larger
+        // so let's just jump out then
+        assert!(shuffle.len() <= write.len());
+        for write_index in 0..shuffle.len() {
+            if shuffle[write_index] != std::usize::MAX {
+                write[write_index] = read[shuffle[write_index]];
+            }
+        }
     }
 
     /// Merge two patches together into a larger patch
@@ -598,17 +656,30 @@ impl Patch {
 
     /// Render the patch as a dense array. This always copies the data.
     pub fn to_dense(&self) -> nd::ArrayD<f32> {
-        self.dense.clone().into_dyn()
+        self.dense
+            .clone()
+            .into_dyn()
+            .into_shape(&self.dense.shape()[..self.ndim()])
+            .unwrap()
     }
 
     /// Get a reference to the content
     pub fn content(&self) -> nd::ArrayViewD<f32> {
-        self.dense.view().into_dyn()
+        self.dense
+            .view()
+            .into_dyn()
+            .into_shape(&self.dense.shape()[..self.ndim()])
+            .unwrap()
     }
 
     /// Get a mutable reference to the content
     pub fn content_mut(&mut self) -> nd::ArrayViewMutD<f32> {
-        self.dense.view_mut().into_dyn()
+        let logical_shape = &self.dense.shape()[..self.ndim()].to_vec();
+        self.dense
+            .view_mut()
+            .into_dyn()
+            .into_shape(&logical_shape[..])
+            .unwrap()
     }
 
     /// Get a shared reference to the axes within
