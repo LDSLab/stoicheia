@@ -1,9 +1,9 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
+use crate::patch::PatchCompressionType;
 use crate::{
     Axis, AxisSegment, AxisSelection, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef,
     QuiltDetails, StoiError,
 };
-use crate::patch::PatchCompressionType;
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
 use std::collections::{HashMap, HashSet};
@@ -98,7 +98,10 @@ impl<'t> SQLiteTransaction<'t> {
         // TODO: If this serialize fails it will deadlock the connection by not rolling back
         self.txn.execute(
             "INSERT OR REPLACE INTO PatchContent(patch_id, content) VALUES (?,?);",
-            &[&patch_id as &dyn ToSql, &pat.serialize(Some(PatchCompressionType::LZ4{quality: 0}))?],
+            &[
+                &patch_id as &dyn ToSql,
+                &pat.serialize(Some(PatchCompressionType::LZ4 { quality: 0 }))?,
+            ],
         )?;
         Ok(patch_id)
     }
@@ -125,45 +128,51 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
         self.txn.execute(
             &format!(
-                "INSERT {} INTO AxisContent(axis_name, content) VALUES (?,?);",
+                "INSERT {} INTO Axis(axis_name) VALUES (?);",
                 if ignore_if_exists { "OR IGNORE" } else { "" }
             ),
-            &[
-                &axis_name as &dyn ToSql,
-                &bincode::serialize(&Axis::empty(axis_name))?,
-            ],
+            &[&axis_name as &dyn ToSql],
         )?;
         Ok(())
     }
 
     /// Replace a whole axis. Only do this through `Catalog.union_axis()`.
     fn put_axis(&mut self, axis: &Axis) -> Fallible<()> {
-        self.txn.execute(
-            "INSERT OR REPLACE INTO AxisContent(axis_name, content) VALUES (?,?);",
-            &[&axis.name as &dyn ToSql, &bincode::serialize(&axis)?],
-        )?;
-        self.axis_cache.insert(axis.name.clone(), axis.clone());
+        let mut changes = 0;
+        for label in axis.labels() {
+            changes += self.txn.execute(
+                "INSERT OR IGNORE INTO Axis(axis_name) VALUES (?)",
+                &[&axis.name]
+            )?;
+            changes += self.txn.execute(
+                "INSERT OR IGNORE INTO AxisContent(axis_name, label) VALUES (?,?);",
+                &[&axis.name as &dyn ToSql, &label],
+            )?;
+        }
+        if changes > 0 {
+            self.axis_cache.insert(axis.name.clone(), axis.clone());
+        }
         Ok(())
     }
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
     fn get_axis(&mut self, axis_name: &str) -> Fallible<&Axis> {
         if !self.axis_cache.contains_key(axis_name) {
-            let res: Option<Vec<u8>> = self
-                .txn
-                .query_row(
-                    "SELECT content FROM AxisContent WHERE axis_name = ?",
-                    &[&axis_name],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            match res {
-                None => return Err(StoiError::NotFound("axis doesn't exist", axis_name.into())),
-                Some(x) => {
-                    let axis: Axis = bincode::deserialize(&x[..])?;
-                    self.axis_cache.insert(axis_name.to_string(), axis);
-                }
+            self.txn.query_row(
+                "SELECT * FROM Axis WHERE axis_name = ?", 
+                &[&axis_name],
+                |_| Ok(true)
+            )?;
+            let mut stmt = self.txn.prepare(
+                "SELECT label FROM AxisContent WHERE axis_name = ? ORDER BY global_storage_index",
+            )?;
+            let rows = stmt.query_map(&[&axis_name], |r| r.get::<_, i64>(0))?;
+            let mut labels = vec![];
+            for label in rows {
+                labels.push(label?);
             }
+            self.axis_cache
+                .insert(axis_name.to_string(), Axis::new(axis_name, labels)?);
         }
         Ok(self.axis_cache.get(axis_name).unwrap())
     }
@@ -411,9 +420,10 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 // Garbage collect the old patch because now it has been compacted into the new one
                 self.del_patch(friend_patch_ref.id)?;
 
-                // Split the patch if necessary
+                // Merge the patch with it's friend
                 let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
 
+                // Split it along it's longest axis
                 let long_axis = new_large_patch
                     .axes()
                     .iter()

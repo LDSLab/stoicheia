@@ -84,17 +84,11 @@ impl Axis {
     /// This will not change labels in self, because downstream that means patches would need to
     /// be rebuilt.
     ///
-    ///     use stoicheia::{Axis, Label};
-    ///     let mut left = Axis::new("a", vec![
-    ///         Label(1), Label(2), Label(4), Label(5)
-    ///     ]).unwrap();
-    ///     let right = Axis::new("a", vec![
-    ///         Label(1), Label(3), Label(7)
-    ///     ]).unwrap();
+    ///     use stoicheia::Axis;
+    ///     let mut left = Axis::new("a", vec![1, 2, 4, 5]).unwrap();
+    ///     let right = Axis::new("a", vec![1, 3, 7]).unwrap();
     ///     left.union(&right);
-    ///     assert_eq!(left.labels(), &[
-    ///         Label(1), Label(2), Label(4), Label(5), Label(3), Label(7)
-    ///     ]);
+    ///     assert_eq!(left.labels(), &[1, 2, 4, 5, 3, 7]);
     ///
     /// Returns true iff self was actually mutated in the process
     pub fn union(&mut self, other: &Axis) -> bool {

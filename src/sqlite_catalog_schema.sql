@@ -25,11 +25,16 @@ CREATE TABLE IF NOT EXISTS PatchContent(
     content  BLOB
 );
 
+CREATE TABLE IF NOT EXISTS Axis(
+    axis_name TEXT PRIMARY KEY
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS AxisContent(
-    axis_name TEXT PRIMARY KEY,
-    content   BLOB,
-    last_modified TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    global_storage_index INTEGER PRIMARY KEY,
+    axis_name TEXT NOT NULL REFERENCES Axis(axis_name) DEFERRABLE INITIALLY DEFERRED,
+    label INTEGER NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS AxisContent__axis_name_label ON AxisContent(axis_name, label);
 
 CREATE TABLE IF NOT EXISTS Comm(
     comm_id        INTEGER PRIMARY KEY,

@@ -2,9 +2,7 @@ use crate::{Axis, Fallible, Label, StoiError};
 use arrayvec::ArrayVec;
 use itertools::Itertools;
 use ndarray as nd;
-use ndarray::{
-    Array4, ArrayD, ArrayView, ArrayView4, ArrayViewMut, ArrayViewMut4,
-};
+use ndarray::{Array4, ArrayD, ArrayView, ArrayView4, ArrayViewMut, ArrayViewMut4};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -204,7 +202,7 @@ impl Patch {
                     .iter()
                     .position(|pat_axis| self_axis.name == pat_axis.name)
                     .unwrap(),
-                None => self_ax_ix
+                None => self_ax_ix,
             };
         }
         // Now roll the tensor if necessary
@@ -334,27 +332,30 @@ impl Patch {
             4 => Self::shuffle_pull_4d(&original.view(), &mut scratch.view_mut(), &shuffles[..]),
             3 => Self::shuffle_pull_3d(
                 &original.index_axis(nd::Axis(3), 0),
-                &mut scratch.index_axis_mut(nd::Axis(3), 0), 
-                &shuffles[..shuffles.len()-1]),
+                &mut scratch.index_axis_mut(nd::Axis(3), 0),
+                &shuffles[..shuffles.len() - 1],
+            ),
             2 => Self::shuffle_pull_2d(
                 &original
                     .index_axis(nd::Axis(3), 0)
                     .index_axis(nd::Axis(2), 0),
                 &mut scratch
                     .index_axis_mut(nd::Axis(3), 0)
-                    .index_axis_mut(nd::Axis(2), 0), 
-                &shuffles[..shuffles.len()-2]),
+                    .index_axis_mut(nd::Axis(2), 0),
+                &shuffles[..shuffles.len() - 2],
+            ),
             1 => Self::shuffle_pull_1d(
-                    &original
-                        .index_axis(nd::Axis(3), 0)
-                        .index_axis(nd::Axis(2), 0)
-                        .index_axis(nd::Axis(1), 0),
-                    &mut scratch
-                        .index_axis_mut(nd::Axis(3), 0)
-                        .index_axis_mut(nd::Axis(2), 0)
-                        .index_axis_mut(nd::Axis(1), 0), 
-                    &shuffles[0]),
-            _ => panic!("Invalid Patch! Can't have more than 4 dimensions!")
+                &original
+                    .index_axis(nd::Axis(3), 0)
+                    .index_axis(nd::Axis(2), 0)
+                    .index_axis(nd::Axis(1), 0),
+                &mut scratch
+                    .index_axis_mut(nd::Axis(3), 0)
+                    .index_axis_mut(nd::Axis(2), 0)
+                    .index_axis_mut(nd::Axis(1), 0),
+                &shuffles[0],
+            ),
+            _ => panic!("Invalid Patch! Can't have more than 4 dimensions!"),
         }
         //original
         scratch
