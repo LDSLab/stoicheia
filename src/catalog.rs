@@ -435,21 +435,22 @@ pub trait StorageTransaction {
     ///     Either: A vec with one element, which is a Cow::Borrowed(&self)
     ///     Or: A vec with 2+ elements, which are all Cow::Owned(Patch)
     fn maybe_split(&mut self, original: Patch) -> Fallible<Vec<Patch>> {
-        // Split it along it's longest axis
-        let (long_ax_ix, long_axis) = original
-            .axes()
-            .iter()
-            .enumerate()
-            .max_by_key(|(_ax_ix, ax)| ax.labels().len())
-            .unwrap(); // <- Patch::new() checks for at least one axis
-                       // Replace the patch axis for the global axis by that name
-
-        let global_long_axis = self.get_axis(&long_axis.name)?;
         match original.content().len() {
             0 => Ok(vec![]),                   // Take out the trash
             1..=4194304 => Ok(vec![original]), // Cap at 4 MB
             _ => {
                 // Split everything else
+                
+                // Split it along it's longest axis
+                let (long_ax_ix, long_axis) = original
+                .axes()
+                .iter()
+                .enumerate()
+                .max_by_key(|(_ax_ix, ax)| ax.labels().len())
+                .unwrap(); // <- Patch::new() checks for at least one axis
+                        // Replace the patch axis for the global axis by that name
+
+                let global_long_axis = self.get_axis(&long_axis.name)?;
                 // This is a heuristic and it could use more serious study
                 let long_axis_labelset: HashMap<Label, usize> = long_axis
                     .labels()
@@ -495,7 +496,9 @@ pub trait StorageTransaction {
                         axes.to_vec(),
                         Some(original.content().select(nd::Axis(long_ax_ix), indices)),
                     )
-                    .unwrap();
+                    .unwrap()
+                    .compact()
+                    .into_owned();
                     patches.extend(self.maybe_split(sliced_patch)?)
                 }
                 Ok(patches)
