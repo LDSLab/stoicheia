@@ -370,39 +370,41 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         //     - If it gets too large, split it by the longest dimension
         //
         let comm_id: i64 = self.gen_id();
-        for &pat in patches {
-            let new_bounding_box = self.get_bounding_box(pat)?;
-
-            // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
-            let maybe_friend_patch_ref = self
-                .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
-                .into_iter()
-                .min_by_key(|patch_ref| patch_ref.decompressed_size);
-
-            let pending_patches = match maybe_friend_patch_ref {
-                Some(friend_patch_ref) => {
-                    // Find the visible area, not the original. If it was occluded by another (larger?) patch
-                    // in between, we need to include that occlusion in the new patch because it's what you
-                    // would have seen if you had fetch()ed
-                    let patch_request = friend_patch_ref.bounding_box[..]
-                        .into_iter()
-                        .map(|(start_ix, end_ix)| AxisSelection::StorageSlice(*start_ix, *end_ix))
-                        .collect_vec();
-                    let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
-                    // Garbage collect the old patch because now it has been compacted into the new one
-                    self.del_patch(friend_patch_ref.id)?;
-
-                    // Merge the patch with it's friend
-                    let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
-                    self.maybe_split(new_large_patch)
-                },
-                // TODO: Look at this clone
-                None => self.maybe_split(pat.to_owned())
-            }?;
-            for new_patch in pending_patches {
-                // Add each new patch
-                let bbox = self.get_bounding_box(&new_patch)?;
-                self.put_patch(comm_id, &new_patch, bbox)?;
+        for &original_patch in patches {
+            // TODO: Look at this clone
+            for pat in self.maybe_split(original_patch.clone())? {
+                let new_bounding_box = self.get_bounding_box(&pat)?;
+                // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
+                let maybe_friend_patch_ref = self
+                    .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
+                    .into_iter()
+                    .min_by_key(|patch_ref| patch_ref.decompressed_size);
+    
+                let pending_patches = match maybe_friend_patch_ref {
+                    Some(friend_patch_ref) => {
+                        // Find the visible area, not the original. If it was occluded by another (larger?) patch
+                        // in between, we need to include that occlusion in the new patch because it's what you
+                        // would have seen if you had fetch()ed
+                        let patch_request = friend_patch_ref.bounding_box[..]
+                            .into_iter()
+                            .map(|(start_ix, end_ix)| AxisSelection::StorageSlice(*start_ix, *end_ix))
+                            .collect_vec();
+                        let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
+                        // Garbage collect the old patch because now it has been compacted into the new one
+                        self.del_patch(friend_patch_ref.id)?;
+    
+                        // Merge the patch with it's friend
+                        let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
+                        self.maybe_split(new_large_patch)
+                    },
+                    // TODO: Look at this clone
+                    None => self.maybe_split(pat)
+                }?;
+                for new_patch in pending_patches {
+                    // Add each new patch
+                    let bbox = self.get_bounding_box(&new_patch)?;
+                    self.put_patch(comm_id, &new_patch, bbox)?;
+                }
             }
         }
         self.txn.execute(
