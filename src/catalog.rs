@@ -1,7 +1,9 @@
 use crate::sqlite::SQLiteConnection;
 use crate::Fallible;
+use crate::Label;
 use itertools::Itertools;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::convert::TryInto;
 use std::sync::Arc;
 
 use crate::{
@@ -221,12 +223,6 @@ pub trait StorageTransaction {
         bounds: &[BoundingBox],
     ) -> Fallible<Vec<PatchRef>>;
 
-    /// Get the bounding box of a patch
-    ///
-    /// These bounding boxes depend on the storage order of the catalog, so they aren't something
-    /// the Patch could know on its own, instead you find this through the catalog
-    fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox>;
-
     /// Get a single patch by ID
     fn get_patch(&self, id: PatchID) -> Fallible<Patch>;
 
@@ -426,6 +422,113 @@ pub trait StorageTransaction {
         }
 
         Ok(target_patch)
+    }
+
+    /// Split a patch in half if it's larger than it probably should be.
+    ///
+    /// This
+    ///
+    /// Accepts:
+    ///     long_axis: the global axis to split in half
+    ///
+    /// Returns:
+    ///     Either: A vec with one element, which is a Cow::Borrowed(&self)
+    ///     Or: A vec with 2+ elements, which are all Cow::Owned(Patch)
+    fn maybe_split(&mut self, original: Patch) -> Fallible<Vec<Patch>> {
+        // Split it along it's longest axis
+        let (long_ax_ix, long_axis) = original
+            .axes()
+            .iter()
+            .enumerate()
+            .max_by_key(|(_ax_ix, ax)| ax.labels().len())
+            .unwrap(); // <- Patch::new() checks for at least one axis
+                       // Replace the patch axis for the global axis by that name
+
+        let global_long_axis = self.get_axis(&long_axis.name)?;
+        match original.content().len() {
+            0 => Ok(vec![]),                   // Take out the trash
+            1..=4194304 => Ok(vec![original]), // Cap at 4 MB
+            _ => {
+                // Split everything else
+                // This is a heuristic and it could use more serious study
+                let long_axis_labelset: HashMap<Label, usize> = long_axis
+                    .labels()
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(a, b)| (b, a))
+                    .collect();
+
+                let global_locations = global_long_axis
+                    .labels()
+                    .iter()
+                    .filter_map(|global_label| long_axis_labelset.get(global_label))
+                    .copied()
+                    .collect_vec();
+
+                if global_locations.len() < long_axis_labelset.len() {
+                    return Err(StoiError::MisalignedAxes(
+                        "Patch contains labels not present in the global axis. 
+                    Always union global axes against patch axes before splitting a patch,
+                    because otherwise it's not clear what the Patch's bounding box would be."
+                            .into(),
+                    ));
+                }
+
+                // The important part - split the long axis in half according to the global axis order
+                let (left_patch_indices, right_patch_indices) =
+                    global_locations.split_at(global_locations.len() / 2);
+
+                let mut patches = vec![];
+                for indices in &[left_patch_indices, right_patch_indices] {
+                    let mut axes = original.axes().to_vec();
+                    // Replace the long axis
+                    axes[long_ax_ix] = Axis::new_unchecked(
+                        &long_axis.name,
+                        indices
+                            .iter()
+                            .map(|ix| long_axis.labels()[*ix])
+                            .collect_vec(),
+                    );
+                    // Slice the patch
+                    let sliced_patch = Patch::new(
+                        axes.to_vec(),
+                        Some(original.content().select(nd::Axis(long_ax_ix), indices)),
+                    )
+                    .unwrap();
+                    patches.extend(self.maybe_split(sliced_patch)?)
+                }
+                Ok(patches)
+            }
+        }
+    }
+
+    /// Get the bounding box of a patch
+    ///
+    /// These bounding boxes depend on the storage order of the catalog, so they aren't something
+    /// the Patch could know on its own, instead you find this through the catalog
+    fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox> {
+        let bbvec = (0..4)
+            .map(|ax_ix| match patch.axes().get(ax_ix) {
+                Some(patch_axis) => {
+                    let patch_axis_labelset: HashSet<Label> =
+                        patch_axis.labels().iter().copied().collect();
+                    let global_axis = self.get_axis(&patch_axis.name)?;
+                    let first = global_axis
+                        .labels()
+                        .iter()
+                        .position(|x| patch_axis_labelset.contains(x));
+                    let last = global_axis
+                        .labels()
+                        .iter()
+                        .rposition(|x| patch_axis_labelset.contains(x));
+
+                    Ok((first.unwrap_or(0), last.unwrap_or(1 << 60)))
+                }
+                None => Ok((0, 1 << 60)),
+            })
+            .collect::<Fallible<Vec<AxisSegment>>>()?;
+        Ok(bbvec[..].try_into()?)
     }
 }
 

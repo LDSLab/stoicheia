@@ -1,13 +1,12 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
 use crate::patch::PatchCompressionType;
 use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Fallible, Label, Patch, PatchID, PatchRef,
-    QuiltDetails, StoiError,
+    Axis, AxisSelection, BoundingBox, Fallible, Patch, PatchID, PatchRef, QuiltDetails, StoiError,
 };
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
-use std::collections::{HashMap, HashSet};
-use std::convert::{TryFrom, TryInto};
+use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -142,7 +141,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         for label in axis.labels() {
             changes += self.txn.execute(
                 "INSERT OR IGNORE INTO Axis(axis_name) VALUES (?)",
-                &[&axis.name]
+                &[&axis.name],
             )?;
             changes += self.txn.execute(
                 "INSERT OR IGNORE INTO AxisContent(axis_name, label) VALUES (?,?);",
@@ -159,9 +158,9 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     fn get_axis(&mut self, axis_name: &str) -> Fallible<&Axis> {
         if !self.axis_cache.contains_key(axis_name) {
             self.txn.query_row(
-                "SELECT * FROM Axis WHERE axis_name = ?", 
+                "SELECT * FROM Axis WHERE axis_name = ?",
                 &[&axis_name],
-                |_| Ok(true)
+                |_| Ok(true),
             )?;
             let mut stmt = self.txn.prepare(
                 "SELECT label FROM AxisContent WHERE axis_name = ? ORDER BY global_storage_index",
@@ -351,34 +350,6 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     // put_patch is part of Self, not Storage because you can only do it using put_commit()
 
-    /// Get the bounding box of a patch
-    ///
-    /// These bounding boxes depend on the storage order of the catalog, so they aren't something
-    /// the Patch could know on its own, instead you find this through the catalog
-    fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox> {
-        let bbvec = (0..4)
-            .map(|ax_ix| match patch.axes().get(ax_ix) {
-                Some(patch_axis) => {
-                    let patch_axis_labelset: HashSet<Label> =
-                        patch_axis.labels().iter().copied().collect();
-                    let global_axis = self.get_axis(&patch_axis.name)?;
-                    let first = global_axis
-                        .labels()
-                        .iter()
-                        .position(|x| patch_axis_labelset.contains(x));
-                    let last = global_axis
-                        .labels()
-                        .iter()
-                        .rposition(|x| patch_axis_labelset.contains(x));
-
-                    Ok((first.unwrap_or(0), last.unwrap_or(1 << 60)))
-                }
-                None => Ok((0, 1 << 60)),
-            })
-            .collect::<Fallible<Vec<AxisSegment>>>()?;
-        Ok(bbvec[..].try_into()?)
-    }
-
     /// Make changes to a tensor via a commit
     ///
     /// This is only available together, so that the underlying storage media can do this
@@ -423,16 +394,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                 // Merge the patch with it's friend
                 let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
 
-                // Split it along it's longest axis
-                let long_axis = new_large_patch
-                    .axes()
-                    .iter()
-                    .max_by_key(|ax| ax.labels().len())
-                    .unwrap(); // <- Patch::new() checks for at least one axis
-                               // Replace the patch axis for the global axis by that name
-                let long_axis = self.get_axis(&long_axis.name)?;
-
-                for new_patch in new_large_patch.maybe_split(long_axis)? {
+                for new_patch in self.maybe_split(new_large_patch)? {
                     // Add each new patch
                     let bbox = self.get_bounding_box(&new_patch)?;
                     self.put_patch(comm_id, &new_patch, bbox)?;
