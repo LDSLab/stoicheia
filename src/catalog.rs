@@ -289,14 +289,14 @@ pub trait StorageTransaction {
                     .position(|&x| x == start)
                     // If we can't find that label we don't search anything
                     .unwrap_or(axis.len());
-                let end_ix = start_ix
+                let end_ix = 1 + start_ix
                     + lab[start_ix..]
                         .iter()
                         .position(|&x| x == end)
-                        .unwrap_or(axis.len() - start_ix);
+                        .unwrap_or(0);
                 (
-                    Axis::new(&axis.name, Vec::from(&lab[start_ix..=end_ix]))?,
-                    vec![(start_ix, end_ix + 1)],
+                    Axis::new(&axis.name, Vec::from(&lab[start_ix..end_ix]))?,
+                    vec![(start_ix, end_ix)],
                 )
             }
             AxisSelection::StorageSlice(start_ix, end_ix) => {
