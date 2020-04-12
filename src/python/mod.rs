@@ -7,6 +7,7 @@
 //! cat = Catalog("example.db")
 //! ```
 use crate::error::StoiError;
+use crate::{StorageTransaction};
 use itertools::Itertools;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};
@@ -58,11 +59,13 @@ impl Catalog {
 
     /// Create a new quilt in the catalog, given a name and the axes it uses
     pub fn create_quilt(&self, quilt_name: String, axes: Vec<String>) -> PyResult<()> {
-        self.inner.create_quilt(
+        let txn = self.inner.begin()?;
+        txn.create_quilt(
             &quilt_name,
             &axes.iter().map(|s| s.as_ref()).collect_vec()[..],
             true,
         )?;
+        txn.finish()?;
         Ok(())
     }
 
@@ -95,7 +98,8 @@ impl Catalog {
     ) -> PyResult<crate::python::Patch> {
         let specified_axes: HashMap<String, &PyAny> =
             axes.map(|a| a.extract()).transpose()?.unwrap_or_default();
-        let quilt_details = self.inner.get_quilt_details(quilt_name)?;
+        let mut txn = self.inner.begin()?;
+        let quilt_details = txn.get_quilt_details(quilt_name)?;
         let mut axes_selections = vec![];
 
         // We need to iterate because the order matters and HashSet would have missed that
@@ -122,7 +126,7 @@ impl Catalog {
         }
 
         Ok(crate::python::Patch {
-            inner: self.inner.fetch(&quilt_name, &tag, axes_selections)?,
+            inner: txn.fetch(&quilt_name, &tag, axes_selections)?,
         })
     }
 
@@ -151,13 +155,15 @@ impl Catalog {
         message: &str,
         patches: Vec<&crate::python::Patch>,
     ) -> PyResult<()> {
-        self.inner.commit(
+        let mut txn = self.inner.begin()?;
+        txn.create_commit(
             &quilt_name,
             parent_tag.unwrap_or("latest"),
             new_tag.unwrap_or("latest"),
             &message,
             &patches.iter().map(|p| &p.inner).collect_vec(),
         )?;
+        txn.finish()?;
         Ok(())
     }
 
