@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS AxisContent(
     axis_name TEXT NOT NULL REFERENCES Axis(axis_name) DEFERRABLE INITIALLY DEFERRED,
     label INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS AxisContent__axis_name_label ON AxisContent(axis_name, label);
+CREATE UNIQUE INDEX IF NOT EXISTS AxisContent__axis_name__global_storage_index__label ON AxisContent(axis_name, global_storage_index, label);
 
 CREATE TABLE IF NOT EXISTS Comm(
     comm_id        INTEGER PRIMARY KEY,

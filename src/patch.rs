@@ -465,34 +465,27 @@ impl Patch {
     ///
     /// This is actually pretty simple, it works by creating a new Patch and applying
     /// all of the patches to it.
-    pub fn merge(operands: &[&Patch]) -> Fallible<Patch> {
-        if operands.is_empty() {
+    pub fn merge(&self, other: &Patch) -> Fallible<Patch> {
+        // There must have been a first one and it must have had axes
+        let mut axes = other.axes().iter().cloned().collect_vec();
+        if !other
+            .axes()
+            .iter()
+            .map(|ax| &ax.name)
+            .eq(axes.iter().map(|ax| &ax.name))
+        {
             return Err(StoiError::InvalidValue(
-                "Empty merge. There is no identity for patches because it's not clear what the axes would be.",
+                "Unmatched axes. All Patch::merge() must have the same axis names in the same order.",
             ));
         }
 
-        // There must have been a first one and it must have had axes
-        let mut axes = operands[0].axes().iter().cloned().collect_vec();
-        for operand in &operands[1..] {
-            if !operand
-                .axes()
-                .iter()
-                .map(|ax| &ax.name)
-                .eq(axes.iter().map(|ax| &ax.name))
-            {
-                return Err(StoiError::InvalidValue(
-                    "Unmatched axes. All operands of Patch::merge() must have the same axis names in the same order.",
-                ));
-            }
-            for (ax_ix, axis) in operand.axes().into_iter().enumerate() {
-                axes[ax_ix].union(&axis); // In-place
-            }
+        for (ax_ix, axis) in other.axes().into_iter().enumerate() {
+            axes[ax_ix].union(&axis); // In-place
         }
+        // TODO: Maybe we don't need to allocate here?
         let mut target = Patch::new(axes, None)?;
-        for operand in operands {
-            target.apply(operand)?;
-        }
+        target.apply(&self)?;
+        target.apply(other)?;
         Ok(target)
     }
 
@@ -507,18 +500,19 @@ impl Patch {
     ///
     ///     use stoicheia::{Axis, Patch};
     ///     use ndarray::arr2;
+    ///     use std::f32::NAN;
     ///     let mut p = Patch::new(vec![
     ///         Axis::range("a", 0..2),
     ///         Axis::range("b", 0..3)
-    ///     ], arr2(&[
-    ///         [ 3, 0, 5],
-    ///         [ 0, 0, 0]
-    ///     ]).into_dyn()).unwrap();
+    ///     ], Some(arr2(&[
+    ///         [ 3., NAN, 5.],
+    ///         [ NAN, NAN, NAN]
+    ///     ]).into_dyn())).unwrap();
     ///
     ///     assert_eq!(
     ///         p.compact().to_dense(),
     ///         arr2(&[
-    ///             [3, 5]
+    ///             [3., 5.]
     ///         ]).into_dyn());
     pub fn compact(&self) -> Cow<Self> {
         // This is a ragged matrix, not a tensor
@@ -546,7 +540,7 @@ impl Patch {
             .product();
 
         // If the juice is worth the squeeze
-        if total_new_elements < self.dense.len() as f32 * 0.75 {
+        if total_new_elements < self.len() as f32 * 0.75 {
             // Remove the most selective axes first
             keep_lens.sort_unstable_by_key(|&(ax_ix, ct)| ct / self.dense.len_of(nd::Axis(ax_ix)));
             let mut dense = Cow::Borrowed(&self.dense);
@@ -1000,7 +994,7 @@ mod test {
             .axis_range("y", 0..2)
             .content_2d(&[[1., std::f32::NAN], [std::f32::NAN, 4.]])
             .unwrap();
-        let m = Patch::merge(&[&pat1, &pat2]).unwrap().to_dense();
+        let m = pat1.merge(&pat2).unwrap().to_dense();
         assert_eq!(m[[0, 0]], 1.);
         assert_eq!(m[[0, 1]], 2.);
         assert_eq!(m[[1, 0]], 3.);

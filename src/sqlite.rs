@@ -59,7 +59,21 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
     }
 }
 
-pub(crate) struct SQLiteTransaction<'t> {
+/// A single database transaction.
+///
+/// Transactions are somewhat expensive, as they do incur disk activity,
+/// and they also can act as critial sections, since in most cases only one write transaction
+/// can be open at a time.
+/// To maintain good performance, try to:
+///  - Minimize transactions
+///  - Begin() late and commit() promptly
+///  - Delay the first write, (e.g. R-R-W-W, rather than R-W-R-W)
+///  - Keep mutations per transaction between 16KB and 100MB
+///
+/// Keep in mind that even if your code is correct, transactions that mutate the database
+/// can fail and may need to be retried. This happens if two transactions enter a race
+/// condition.
+pub struct SQLiteTransaction<'t> {
     txn: MutexGuard<'t, rusqlite::Connection>,
     axis_cache: HashMap<String, Axis>,
 }
@@ -124,44 +138,34 @@ impl<'t> SQLiteTransaction<'t> {
 }
 
 impl<'t> StorageTransaction for SQLiteTransaction<'t> {
-    fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
-        self.txn.execute(
-            &format!(
-                "INSERT {} INTO Axis(axis_name) VALUES (?);",
-                if ignore_if_exists { "OR IGNORE" } else { "" }
-            ),
-            &[&axis_name as &dyn ToSql],
-        )?;
-        Ok(())
-    }
+    /// Append labels to an axis, in the order you would expect them to be stored.
+    /// Any duplicate labels will not be appended.
+    ///
+    /// Returns true iff the axis was mutated in the process
+    fn union_axis(&mut self, axis: &Axis) -> Fallible<bool> {
+        let existing_labels = self.get_axis(&axis.name)?.labelset();
 
-    /// Replace a whole axis. Only do this through `Catalog.union_axis()`.
-    fn put_axis(&mut self, axis: &Axis) -> Fallible<()> {
         let mut changes = 0;
-        for label in axis.labels() {
-            changes += self.txn.execute(
-                "INSERT OR IGNORE INTO Axis(axis_name) VALUES (?)",
-                &[&axis.name],
-            )?;
-            changes += self.txn.execute(
-                "INSERT OR IGNORE INTO AxisContent(axis_name, label) VALUES (?,?);",
-                &[&axis.name as &dyn ToSql, &label],
-            )?;
+        changes += self.txn.execute(
+            "INSERT OR IGNORE INTO Axis(axis_name) VALUES (?)",
+            &[&axis.name],
+        )?;
+        let mut stmt = self
+            .txn
+            .prepare("INSERT OR IGNORE INTO AxisContent(axis_name, label) VALUES (?,?);")?;
+        for label in axis.labelset().difference(&existing_labels) {
+            changes += stmt.execute(&[&axis.name as &dyn ToSql, &label])?;
         }
         if changes > 0 {
-            self.axis_cache.insert(axis.name.clone(), axis.clone());
+            // Repair the cache
+            self.axis_cache.get_mut(&axis.name).unwrap().union(&axis);
         }
-        Ok(())
+        Ok(changes > 0)
     }
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
     fn get_axis(&mut self, axis_name: &str) -> Fallible<&Axis> {
         if !self.axis_cache.contains_key(axis_name) {
-            self.txn.query_row(
-                "SELECT * FROM Axis WHERE axis_name = ?",
-                &[&axis_name],
-                |_| Ok(true),
-            )?;
             let mut stmt = self.txn.prepare(
                 "SELECT label FROM AxisContent WHERE axis_name = ? ORDER BY global_storage_index",
             )?;
@@ -176,7 +180,24 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         Ok(self.axis_cache.get(axis_name).unwrap())
     }
 
-    /// Create a quilt
+    /// List the currently available quilts
+    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>> {
+        let mut map = HashMap::new();
+        for row in self
+            .txn
+            .prepare("SELECT quilt_name, axes FROM quilt;")?
+            .query_map(NO_PARAMS, |r| QuiltDetails::try_from(r))?
+        {
+            let row = row?;
+            map.insert(row.name.clone(), row);
+        }
+        Ok(map)
+    }
+
+    /// Create a quilt, and create axes as necessary to make it.
+    ///
+    /// With `ignore_if_exists=true`, you can make this idempotent rather than fail. In either case
+    /// it will not replace or modify an existing quilt.
     fn create_quilt(
         &self,
         quilt_name: &str,
@@ -193,7 +214,10 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         Ok(())
     }
 
-    /// Get extended information about a quilt
+    /// Get details about a quilt by name
+    ///
+    /// What details are available may depend on the quilt, and fields are likely to
+    /// be added with time (so be careful with serializing QuiltDetails)
     fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails> {
         let deets = self
             .txn
@@ -210,20 +234,6 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
             )),
             Some(x) => Ok(x),
         }
-    }
-
-    /// List the currently available quilts
-    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>> {
-        let mut map = HashMap::new();
-        for row in self
-            .txn
-            .prepare("SELECT quilt_name, axes FROM quilt;")?
-            .query_map(NO_PARAMS, |r| QuiltDetails::try_from(r))?
-        {
-            let row = row?;
-            map.insert(row.name.clone(), row);
-        }
-        Ok(map)
     }
 
     /// Get the Patch IDs that would have to be applied to fill a fetch(), in the order they would
@@ -370,41 +380,47 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         //     - If it gets too large, split it by the longest dimension
         //
         let comm_id: i64 = self.gen_id();
-        for &original_patch in patches {
-            // TODO: Look at this clone
-            for pat in self.maybe_split(original_patch.clone())? {
-                let new_bounding_box = self.get_bounding_box(&pat)?;
-                // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
-                let maybe_friend_patch_ref = self
-                    .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
-                    .into_iter()
-                    .min_by_key(|patch_ref| patch_ref.decompressed_size);
-    
-                let pending_patches = match maybe_friend_patch_ref {
-                    Some(friend_patch_ref) => {
-                        // Find the visible area, not the original. If it was occluded by another (larger?) patch
-                        // in between, we need to include that occlusion in the new patch because it's what you
-                        // would have seen if you had fetch()ed
-                        let patch_request = friend_patch_ref.bounding_box[..]
-                            .into_iter()
-                            .map(|(start_ix, end_ix)| AxisSelection::StorageSlice(*start_ix, *end_ix))
-                            .collect_vec();
-                        let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
-                        // Garbage collect the old patch because now it has been compacted into the new one
-                        self.del_patch(friend_patch_ref.id)?;
-    
-                        // Merge the patch with it's friend
-                        let new_large_patch = Patch::merge(&[&friend_visible_area, &pat])?;
-                        self.maybe_split(new_large_patch)
-                    },
-                    // TODO: Look at this clone
-                    None => self.maybe_split(pat)
-                }?;
-                for new_patch in pending_patches {
-                    // Add each new patch
-                    let bbox = self.get_bounding_box(&new_patch)?;
-                    self.put_patch(comm_id, &new_patch, bbox)?;
+        let mut pending_patches = vec![];
+        for &pat in patches {
+            let new_bounding_box = self.get_bounding_box(&pat)?;
+            // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
+            let maybe_friend_patch_ref = self
+                .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
+                .into_iter()
+                // TODO: Consider percent overlap
+                .min_by_key(|patch_ref| patch_ref.decompressed_size);
+            pending_patches.extend(match maybe_friend_patch_ref {
+                Some(friend_patch_ref) => {
+                    // Find the visible area, not just the original. If it was occluded by another (larger?) patch
+                    // in between, we need to include that occlusion in the new patch because it's what you
+                    // would have seen if you had fetch()ed
+                    //
+                    // We get the friend first because counter-intuitively, it's faster.
+                    // In most cases the friend will not cover it's whole bounding box so it's
+                    // much more efficient to create a selection from the friend instead.
+                    let friend = self.get_patch(friend_patch_ref.id)?;
+                    let patch_request = friend
+                        .axes()
+                        .iter()
+                        .map(|ax| AxisSelection::Labels(ax.labels().to_vec()))
+                        .collect_vec();
+                    let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
+                    // Garbage collect the old patch because now it has been compacted into the new one
+                    self.del_patch(friend_patch_ref.id)?;
+
+                    // Merge the patch with it's friend
+                    let new_large_patch = friend_visible_area.merge(&pat)?;
+                    self.maybe_split(new_large_patch)
                 }
+                // TODO: Look at this clone
+                None => Ok(vec![pat.to_owned()]),
+            }?);
+        }
+        for new_patch in pending_patches {
+            if new_patch.len() > 0 {
+                // Add each new patch
+                let bbox = self.get_bounding_box(&new_patch)?;
+                self.put_patch(comm_id, &new_patch, bbox)?;
             }
         }
         self.txn.execute(

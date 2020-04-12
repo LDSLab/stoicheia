@@ -10,8 +10,6 @@ crate-type = ["cdylib", "lib"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rocket = "0.4.2"
-rocket_contrib = "0.4.2"
 serde_json = "1.0.45"
 ndarray = {version= "0.13.0", features=["serde", "approx"]}
 bincode = "1.2.1"
@@ -19,7 +17,7 @@ serde_derive = "1.0.104"
 serde = "1.0.104"
 itertools = "0.8.2"
 rusqlite = {version="0.21.0", features=["bundled"]}
-rand = "0.7.3"
+rand = {version="0.7.3", features=["small_rng"]}
 thiserror = "1.0.10"
 approx = "0.3.2"
 

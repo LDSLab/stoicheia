@@ -1,5 +1,10 @@
 /private
 /target
-*.db
 *.so
 *.pyc
+
+# No SQLite databases
+*.db
+*-journal
+*-wal
+*-shm

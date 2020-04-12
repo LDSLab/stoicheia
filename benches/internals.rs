@@ -1,9 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use rand;
+use rand::rngs::SmallRng; // This RNG is much faster and not secure but we don't need that
+use rand::{Rng, SeedableRng};
+use std::collections::HashSet;
 use stoicheia::*;
 #[macro_use]
 extern crate lazy_static;
-
 lazy_static! {
     static ref EMPTY_4MB_PATCH: Patch = Patch::build()
         .axis_range("dim0", black_box(1000..2000))
@@ -12,21 +13,67 @@ lazy_static! {
         .unwrap();
 }
 
-#[inline]
 fn new_axis(labels: &[i64]) -> Axis {
     Axis::new("item", labels.to_owned()).unwrap()
 }
 
-/// No-content matrix. Used for abstracting over array content
-fn empty_content(_size: usize) -> Option<ndarray::ArrayD<f32>> {
-    None
+#[derive(Debug, Clone, Copy)]
+enum Pattern {
+    Empty,
+    Zero,
+    Random,
+    Sparse,
 }
-/// Create a new random matrix. Used for abstracting over array content
-fn random_content(size: usize) -> Option<ndarray::ArrayD<f32>> {
-    Some(ndarray::ArrayD::from_shape_fn(
-        vec![size as usize, size as usize],
-        |_| rand::random::<f32>(),
-    ))
+/// Create a new patch with some pattern of content
+///
+/// Almost everything is sensitive to the content, for example:
+///     - Patch serialization is compressed, where empty is fast and random is slow
+///     - Patch apply speed depends on how predictable memory access is
+///     - Sparse areas can trigger compacting, saving space with expense of CPU
+fn create_content(pattern: Pattern, size: usize) -> Patch {
+    use Pattern::*;
+    // This rng makes it easier to get a uniform range
+    let mut rng = SmallRng::from_entropy();
+
+    let content = match pattern {
+        Empty => None,
+        Zero => Some(ndarray::Array2::zeros([size, size]).into_dyn()),
+        Random => Some(ndarray::ArrayD::from_shape_fn(
+            vec![size as usize, size as usize],
+            |_| rand::random::<f32>(),
+        )),
+        Sparse => {
+            let mut canvas = ndarray::Array2::from_elem([size, size], std::f32::NAN);
+            let nonzero_count = size * size / 1000;
+            for _ in 0..nonzero_count {
+                // This is indicative of the sparsity but not really the values
+                let x = rng.gen_range(0, size);
+                let y = rng.gen_range(0, size);
+                canvas[[x, y]] = rng.gen_range(0f32, 5.0);
+            }
+            Some(canvas.into_dyn())
+        }
+    };
+
+    // Let one axis be wildly sparse so every patch overlaps practically every other
+    let dim0: Vec<i64> = (0..size * 5 / 4)
+        .map(|_| rng.gen_range(-1000000, 1000000))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .take(size)
+        .collect();
+    // Let the other be less sparse and clumpy
+    let dim1_start = rng.gen_range(0i64, 25000);
+    let dim1: Vec<i64> = (0..3 * size as i64)
+        .step_by(3)
+        .map(|lab| lab + dim1_start)
+        .collect();
+
+    Patch::build()
+        .axis("dim0", &dim0)
+        .axis("dim1", &dim1)
+        .content(content)
+        .unwrap()
 }
 
 pub fn bench_axis(c: &mut Criterion) {
@@ -76,43 +123,52 @@ pub fn bench_patch(c: &mut Criterion) {
         b.iter(|| target_patch.apply(black_box(&source_patch)))
     });
 
+    c.bench_function("Patch::apply overlap no-clone", |b| {
+        let mut target_patch = create_content(Pattern::Random, 1000);
+        let source_patch = create_content(Pattern::Random, 1000);
+
+        b.iter(|| target_patch.apply(black_box(&source_patch)))
+    });
+
     {
         // A group of benchmarks that all benchmark serializing Patch,
         // because the compression and compaction can be slow
         let mut group = c.benchmark_group("Patch::serialize");
 
         // Two different ways to make the data
-        for (content_name, content_factory) in &[
-            ("empty", &empty_content as &dyn Fn(usize) -> _),
-            ("random", &random_content),
+        for &pattern in &[
+            Pattern::Empty,
+            Pattern::Zero,
+            Pattern::Random,
+            Pattern::Sparse,
         ] {
-            // Three different sizes
-            for &size in &[250, 500, 1000] {
+            for &compression in &[
+                PatchCompressionType::Off,
+                PatchCompressionType::LZ4 { quality: 1 },
+            ] {
+                let size = 1000;
                 // Serialize
                 group.throughput(criterion::Throughput::Bytes(size * size * 4));
                 group.sample_size(10).bench_function(
-                    format!("Patch::serialize {} {}x{}", content_name, size, size),
+                    format!(
+                        "Patch::serialize {:?} {:?} {}x{}",
+                        pattern, compression, size, size
+                    ),
                     |b| {
-                        let patch = Patch::build()
-                            .axis_range("dim0", 1000..1000 + size as i64)
-                            .axis_range("dim1", 0..size as i64)
-                            .content(content_factory(size as usize))
-                            .unwrap();
-
-                        b.iter(|| black_box(&patch).serialize(None).unwrap())
+                        let patch = create_content(pattern, size as usize);
+                        b.iter(|| black_box(&patch).serialize(Some(compression)).unwrap())
                     },
                 );
 
                 // Deserialize
                 group.sample_size(10).bench_function(
-                    format!("Patch::deserialize {} {}x{}", content_name, size, size),
+                    format!(
+                        "Patch::deserialize {:?} {:?} {}x{}",
+                        pattern, compression, size, size
+                    ),
                     |b| {
-                        let patch_bytes = Patch::build()
-                            .axis_range("dim0", 1000..1000 + size as i64)
-                            .axis_range("dim1", 0..size as i64)
-                            .content(content_factory(size as usize))
-                            .unwrap()
-                            .serialize(None)
+                        let patch_bytes = create_content(pattern, size as usize)
+                            .serialize(Some(compression))
                             .unwrap();
 
                         b.iter(|| Patch::deserialize_from(black_box(&patch_bytes[..])).unwrap())
@@ -121,83 +177,61 @@ pub fn bench_patch(c: &mut Criterion) {
             }
         }
     }
-
-    c.bench_function("Patch::apply overlap no-clone", |b| {
-        let mut target_patch = Patch::build()
-            .axis_range("dim0", 1500..2500)
-            .axis_range("dim1", 0..1000)
-            .content(None)
-            .unwrap();
-
-        b.iter(|| target_patch.apply(black_box(&EMPTY_4MB_PATCH)))
-    });
 }
 
 pub fn bench_commit(c: &mut Criterion) {
     let mut group = c.benchmark_group("Catalog::commit");
     // Two different ways to make the data
-    for (content_name, content_factory) in &[
-        ("empty", &empty_content as &dyn Fn(usize) -> _),
-        ("random", &random_content),
-    ] {
-        for &rewrites in &[1, 4, 16] {
-            let name = format!(
-                "Catalog::commit 4MB {} total rewrite repeat-{}",
-                content_name, rewrites
-            );
-            group.sample_size(10).bench_function(name, |b| {
-                let catalog = Catalog::connect("").unwrap();
-                catalog
-                    .create_quilt("quilt", &["dim0", "dim1"], true)
-                    .unwrap();
-                let patch = Patch::build()
-                    .axis_range("dim0", 1500..2500)
-                    .axis_range("dim1", 0..1000)
-                    .content(content_factory(1000))
-                    .unwrap();
-                b.iter(|| {
-                    for _ in 0..rewrites {
-                        catalog
-                            .commit("quilt", "latest", "latest", "message", &[black_box(&patch)])
-                            .unwrap()
-                    }
-                })
-            });
+    for &pattern in &[Pattern::Sparse] {
+        let cat = Catalog::connect("").unwrap();
+        let mut txn = cat.begin().unwrap();
+        let name = format!("Catalog::commit 4MB {:?} total rewrite", pattern);
+        group.sample_size(10).bench_function(name, |b| {
+            let ref quilt_name = format!("commit_bench_quilt_{:?}", pattern);
+            txn.create_quilt(quilt_name, &["dim0", "dim1"], true)
+                .unwrap();
+            b.iter(|| {
+                black_box(txn.create_commit(
+                    quilt_name,
+                    "latest",
+                    "latest",
+                    "message",
+                    &[&create_content(pattern, 1000)],
+                ))
+                .unwrap()
+            })
+        });
 
-            let name = format!(
-                "Catalog::fetch 4MB read {} total rewrite {}-patch commit",
-                content_name, rewrites
-            );
-            group.sample_size(10).bench_function(name, |b| {
-                let catalog = Catalog::connect("").unwrap();
-                catalog
-                    .create_quilt("quilt", &["dim0", "dim1"], true)
-                    .unwrap();
-                let patch = Patch::build()
-                    .axis_range("dim0", 1500..2500)
-                    .axis_range("dim1", 0..1000)
-                    .content(content_factory(1000))
-                    .unwrap();
-                for _ in 0..rewrites {
-                    catalog
-                        .commit("quilt", "latest", "latest", "message", &[black_box(&patch)])
-                        .unwrap()
-                }
-                b.iter(|| {
-                    catalog
-                        .fetch(
-                            "quilt",
-                            "latest",
-                            vec![
-                                AxisSelection::LabelSlice(1500, 2499),
-                                AxisSelection::LabelSlice(0, 999),
-                            ],
-                        )
-                        .unwrap()
-                })
-            });
-        }
+        let name = format!("Catalog::fetch 4MB read {:?} 100-patch commit", pattern);
+
+        let ref quilt_name = format!("fetch_bench_quilt_{:?}", pattern);
+        txn.create_quilt(quilt_name, &["dim0", "dim1"], true)
+            .unwrap();
+        let patches: Vec<_> = (0..100).map(|_| create_content(pattern, 1000)).collect();
+        txn.create_commit(
+            quilt_name,
+            "latest",
+            "latest",
+            "message",
+            &patches.iter().collect::<Vec<_>>()[..],
+        )
+        .unwrap();
+
+        group.sample_size(10).bench_function(name, |b| {
+            b.iter(|| {
+                black_box(txn.fetch(
+                    quilt_name,
+                    "latest",
+                    black_box(vec![
+                        AxisSelection::StorageSlice(0, 1000),
+                        AxisSelection::StorageSlice(0, 1000),
+                    ]),
+                )
+                .unwrap())
+            })
+        });
     }
 }
+
 criterion_group!(benches, bench_axis, bench_patch, bench_commit);
 criterion_main!(benches);

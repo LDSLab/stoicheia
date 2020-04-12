@@ -11,13 +11,10 @@ extern crate rusqlite as sql;
 extern crate approx; // for approximately eq for f32/f64
 
 mod patch;
-pub use patch::Patch;
-
-mod quilt;
-pub use quilt::{Quilt, QuiltDetails};
+pub use patch::{Patch, PatchCompressionType};
 
 mod catalog;
-pub use catalog::Catalog;
+pub use catalog::{Catalog, QuiltDetails, StorageTransaction};
 
 mod sqlite;
 

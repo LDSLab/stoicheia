@@ -1,15 +1,12 @@
-use crate::sqlite::SQLiteConnection;
+use crate::sqlite::{SQLiteConnection, SQLiteTransaction};
 use crate::Fallible;
 use crate::Label;
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
+use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 
-use crate::{
-    Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRef, Quilt, QuiltDetails,
-    StoiError,
-};
+use crate::{Axis, AxisSegment, AxisSelection, BoundingBox, Patch, PatchID, PatchRef, StoiError};
 
 pub struct Catalog {
     storage: Arc<SQLiteConnection>,
@@ -32,146 +29,9 @@ impl Catalog {
         })
     }
 
-    /// List the quilts available in this Catalog
-    pub fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>> {
-        self.storage.txn()?.list_quilts()
-    }
-
-    /// Create a quilt, and create axes as necessary to make it.
-    ///
-    /// With `ignore_if_exists=true`, you can make this idempotent rather than fail. In either case
-    /// it will not replace or modify an existing quilt.
-    pub fn create_quilt(
-        &self,
-        quilt_name: &str,
-        axes_names: &[&str],
-        ignore_if_exists: bool,
-    ) -> Fallible<()> {
-        let txn = self.storage.txn()?;
-        for axis_name in axes_names {
-            txn.create_axis(axis_name, true)?;
-        }
-        txn.create_quilt(quilt_name, axes_names, ignore_if_exists)?;
-        txn.finish()?;
-        Ok(())
-    }
-
-    /// Get a quilt by name, as a convenient way to access patches
-    ///
-    /// This doesn't load any of the content into memory, it just provides a convenient
-    /// way to access patches. As a result, this is pretty cheap, but it does incur IO
-    /// to get the quilt's metadata so it is still fallible.
-    pub fn get_quilt(&self, quilt_name: &str, tag: &str) -> Fallible<Quilt> {
-        // This will fail if the quilt doesn't already exist
-        self.storage.txn()?.get_quilt_details(quilt_name)?;
-        Ok(Quilt::new(quilt_name.into(), tag.into(), self))
-    }
-
-    /// Get details about a quilt by name
-    ///
-    /// What details are available may depend on the quilt, and fields are likely to
-    /// be added with time (so be careful with serializing QuiltDetails)
-    pub fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails> {
-        self.storage.txn()?.get_quilt_details(quilt_name)
-    }
-
-    /// Create an empty axis
-    pub fn create_axis(&self, axis_name: &str, ignore_if_exists: bool) -> Fallible<()> {
-        let txn = self.storage.txn()?;
-        txn.create_axis(axis_name, ignore_if_exists)?;
-        txn.finish()?;
-        Ok(())
-    }
-
-    /// Get all the labels of an axis, in the order you would expect them to be stored
-    pub fn get_axis(&self, name: &str) -> Fallible<Axis> {
-        Ok(self.storage.txn()?.get_axis(name)?.clone())
-    }
-
-    /// Replace the labels of an axis, in the order you would expect them to be stored.
-    ///
-    /// Returns true iff the axis was mutated in the process
-    pub fn union_axis(&self, new_axis: &Axis) -> Fallible<bool> {
-        let mut txn = self.storage.txn()?;
-        let mutated = txn.union_axis(new_axis)?;
-        txn.finish()?;
-        Ok(mutated)
-    }
-
-    /// Fetch a patch from a quilt.
-    ///
-    /// - You can request any slice, and it will be assembled from the underlying commits.
-    ///   - How many patches it's assembled from depends on the storage order
-    ///     (which is the order the labels are specified in the axis, not in your request)
-    /// - You can request elements you haven't initialized yet, and you'll get NANs.
-    /// - You can only request patches up to 1 GB, as a safety valve
-    pub fn fetch(
-        &self,
-        quilt_name: &str,
-        tag: &str,
-        request: Vec<AxisSelection>,
-    ) -> Fallible<Patch> {
-        self.storage.txn()?.fetch(quilt_name, tag, request)
-    }
-
-    /// Commit a patch to a quilt.
-    ///
-    /// Commits are a pretty expensive operation - the system is designed for more reads than writes.
-    /// In specific, it will do at least all the following:
-    ///
-    /// - Get quilt details, including full copies of all the axes
-    /// - Check, compact, and compress all the patches, splitting and balancing search indices
-    /// - Extend all the axes (if necessary) to include the area the patches cover
-    /// - Upload all the patches and their data
-    /// - Log the commit and change the tags to point to it
-    ///
-    pub fn commit(
-        &self,
-        quilt_name: &str,
-        parent_tag: &str,
-        new_tag: &str,
-        message: &str,
-        patches: &[&Patch],
-    ) -> Fallible<()> {
-        // TODO: Implement split/balance...
-        // TODO: Think about axis versioning - maybe not a good idea anyway?
-        let mut txn = self.storage.txn()?;
-
-        // Check that the axes are consistent
-        let quilt_details = txn.get_quilt_details(quilt_name)?;
-        for patch in patches {
-            if patch
-                .axes()
-                .iter()
-                .map(|a| &a.name)
-                .sorted()
-                .ne(quilt_details.axes.iter().sorted())
-            {
-                return Err(StoiError::MisalignedAxes(format!(
-                    "the quilt \"{}\" has axes [{}] but the patch has [{}], which doesn't match. Please note broadcasting is not (yet) supported. The patch axes should match exactly.",
-                    quilt_name, quilt_details.axes.iter().join(", "), patch.axes().iter().map(|a|&a.name).join(", ")
-                )));
-            }
-        }
-
-        // Extend all axes as necessary to complete the patching
-        for axis_name in &quilt_details.axes {
-            let mut axis = txn.get_axis(axis_name)?.clone();
-            let mut mutated = false;
-            for patch in patches {
-                // Linear search over max 4 elements so don't sweat it
-                mutated |= axis.union(&patch.axes().iter().find(|a| &a.name == axis_name).unwrap());
-            }
-            if mutated {
-                // This is actually quite expensive so it's worth avoiding it where possible
-                txn.union_axis(&axis)?;
-            }
-        }
-
-        txn.put_commit(quilt_name, parent_tag, new_tag, message, patches)?;
-
-        txn.finish()?;
-        Ok(())
+    /// Start a new transaction on the quilt
+    pub fn begin(&self) -> Fallible<SQLiteTransaction> {
+        self.storage.txn()
     }
 
     /// Untag a commit, to "delete" it
@@ -226,14 +86,77 @@ pub trait StorageTransaction {
     /// Get a single patch by ID
     fn get_patch(&self, id: PatchID) -> Fallible<Patch>;
 
-    /// Create an axis, possibly ignoring it if it exists
-    fn create_axis(&self, name: &str, ignore_if_exists: bool) -> Fallible<()>;
-
-    /// Get all the labels of an axis, in the order you would expect them to be stored
+    /// Get all the labels of an axis, in the order you would expect them to be stored.
+    /// 
+    /// Returns an empty axis if this axis is missing.
     fn get_axis(&mut self, name: &str) -> Fallible<&Axis>;
 
-    /// Overwrite a whole axis. Only do this through `Catalog.union_axis()`.
-    fn put_axis(&mut self, axis: &Axis) -> Fallible<()>;
+    /// Commit a patch to a quilt.
+    ///
+    /// Commits are a pretty expensive operation - the system is designed for more reads than writes.
+    /// In specific, it will do at least all the following:
+    ///
+    /// - Get quilt details, including full copies of all the axes
+    /// - Check, compact, and compress all the patches, splitting and balancing search indices
+    /// - Extend all the axes (if necessary) to include the area the patches cover
+    /// - Upload all the patches and their data
+    /// - Log the commit and change the tags to point to it
+    ///
+    fn create_commit(
+        &mut self,
+        quilt_name: &str,
+        parent_tag: &str,
+        new_tag: &str,
+        message: &str,
+        patches: &[&Patch],
+    ) -> Fallible<()> {
+        // Check that the axes are consistent
+        let quilt_details = self.get_quilt_details(quilt_name)?;
+        for patch in patches {
+            if patch
+                .axes()
+                .iter()
+                .map(|a| &a.name)
+                .sorted()
+                .ne(quilt_details.axes.iter().sorted())
+            {
+                return Err(StoiError::MisalignedAxes(format!(
+                    "the quilt \"{}\" has axes [{}] but the patch has [{}], which doesn't match. Please note broadcasting is not (yet) supported. The patch axes should match exactly.",
+                    quilt_name, quilt_details.axes.iter().join(", "), patch.axes().iter().map(|a|&a.name).join(", ")
+                )));
+            }
+        }
+
+        // Extend all axes as necessary to complete the patching
+        for axis_name in &quilt_details.axes {
+            let mut axis = self.get_axis(axis_name)?.clone();
+            let mut mutated = false;
+            for patch in patches {
+                // Linear search over max 4 elements so don't sweat it
+                mutated |= axis.union(&patch.axes().iter().find(|a| &a.name == axis_name).unwrap());
+            }
+            if mutated {
+                // This is actually quite expensive so it's worth avoiding it where possible
+                self.union_axis(&axis)?;
+            }
+        }
+
+        // Split the patches into reasonable sizes
+        let mut split_patches = vec![];
+        for &patch in patches {
+            // TODO: Extra clone here?
+            split_patches.extend(self.maybe_split(patch.to_owned())?);
+        }
+
+        self.put_commit(
+            quilt_name,
+            parent_tag,
+            new_tag,
+            message,
+            &split_patches.iter().collect_vec(),
+        )?;
+        Ok(())
+    }
 
     /// Make changes to a tensor via a commit
     ///
@@ -289,11 +212,8 @@ pub trait StorageTransaction {
                     .position(|&x| x == start)
                     // If we can't find that label we don't search anything
                     .unwrap_or(axis.len());
-                let end_ix = 1 + start_ix
-                    + lab[start_ix..]
-                        .iter()
-                        .position(|&x| x == end)
-                        .unwrap_or(0);
+                let end_ix = lab[start_ix..].iter().position(|&x| x == end).unwrap_or(0);
+                let end_ix = (1 + start_ix + end_ix).min(axis.len());
                 (
                     Axis::new(&axis.name, Vec::from(&lab[start_ix..end_ix]))?,
                     vec![(start_ix, end_ix)],
@@ -313,17 +233,7 @@ pub trait StorageTransaction {
     /// Replace the labels of an axis, in the order you would expect them to be stored.
     ///
     /// Returns true iff the axis was mutated in the process
-    fn union_axis(&mut self, new_axis: &Axis) -> Fallible<bool> {
-        let mut existing_axis = self
-            .get_axis(&new_axis.name)
-            .cloned()
-            .unwrap_or(Axis::empty(&new_axis.name));
-        let mutated = existing_axis.union(new_axis);
-        if mutated {
-            self.put_axis(&existing_axis)?;
-        }
-        Ok(mutated)
-    }
+    fn union_axis(&mut self, new_axis: &Axis) -> Fallible<bool>;
 
     /// Fetch a patch from a quilt.
     ///
@@ -437,18 +347,18 @@ pub trait StorageTransaction {
     fn maybe_split(&mut self, original: Patch) -> Fallible<Vec<Patch>> {
         match original.content().len() {
             0 => Ok(vec![]),                   // Take out the trash
-            1..=4194304 => Ok(vec![original]), // Cap at 4 MB
+            1..=1048576 => Ok(vec![original]), // Cap at 4 MB
             _ => {
                 // Split everything else
-                
+
                 // Split it along it's longest axis
                 let (long_ax_ix, long_axis) = original
-                .axes()
-                .iter()
-                .enumerate()
-                .max_by_key(|(_ax_ix, ax)| ax.labels().len())
-                .unwrap(); // <- Patch::new() checks for at least one axis
-                        // Replace the patch axis for the global axis by that name
+                    .axes()
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_ax_ix, ax)| ax.labels().len())
+                    .unwrap(); // <- Patch::new() checks for at least one axis
+                               // Replace the patch axis for the global axis by that name
 
                 let global_long_axis = self.get_axis(&long_axis.name)?;
                 // This is a heuristic and it could use more serious study
@@ -535,65 +445,86 @@ pub trait StorageTransaction {
     }
 }
 
+/// Metadata about a quilt
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct QuiltDetails {
+    pub(crate) name: String,
+    pub(crate) axes: Vec<String>,
+}
+/// Read a QuiltDetails from SQLite
+impl TryFrom<&rusqlite::Row<'_>> for QuiltDetails {
+    type Error = rusqlite::Error;
+
+    fn try_from(row: &rusqlite::Row) -> Result<Self, Self::Error> {
+        Ok(QuiltDetails {
+            name: row.get("quilt_name")?,
+            axes: serde_json::from_str(&row.get::<_, String>("axes")?)
+                // Fudging the error types here a little bit - but it's close
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{Axis, AxisSelection, Catalog, Label, Patch};
+    use crate::{Axis, AxisSelection, Catalog, Label, Patch, StorageTransaction};
 
     #[test]
     fn test_create_axis() {
         let cat = Catalog::connect("").unwrap();
-        cat.create_axis("xjhdsa", false)
-            .expect("Should be fine to create one that doesn't exist yet");
-        cat.create_axis("xjhdsa", true)
-            .expect("Should be fine to try to create an axis that exists");
-        cat.create_axis("xjhdsa", false)
-            .expect_err("Should fail to create duplicate axis");
+        let mut txn = cat.begin().unwrap();
 
-        cat.get_axis("uyiuyoiuy")
-            .expect_err("Should throw an error for an axis that doesn't exist.");
-        let mut ax = cat
+        let ax = txn
             .get_axis("xjhdsa")
-            .expect("Should be able to get an axis I just made");
+            .expect("Getting an empty axis should be fine");
         assert!(ax.labels() == &[] as &[Label]);
 
-        ax = Axis::new("uyiuyoiuy", vec![1, 5]).expect("Should be able to create an axis");
+        let ref ax = Axis::new("uyiuyoiuy", vec![1, 5]).expect("Should be able to create an axis");
 
         // Union an axis
-        cat.union_axis(&ax)
-            .expect("Should be able to union an axis");
-        ax = cat
+        txn.union_axis(&ax)
+            .expect("Should be able to create an axis by union");
+        let ax = txn
             .get_axis("uyiuyoiuy")
-            .expect("Axis should exist after union");
+            .expect("Axis should exist after union")
+            .to_owned();
+        // Note how we had to clone the axis. This is interesting, and for good reason!
+        // Unioning an axis would cause any existing axes to possibly be invalidated.
+        // So you can't union while there are still any references to Axes.
+        // Your axes can only be out of date if you make a copy. And in this case, we
+        // have chosen to do that.
         assert_eq!(ax.labels(), &[1, 5]);
 
-        cat.union_axis(&ax).expect("Union twice is a no-op");
-        ax = cat
+        txn.union_axis(&ax).expect("Union twice is a no-op");
+        let ax = txn
             .get_axis("uyiuyoiuy")
             .expect("Axis should still exist after second union");
         assert_eq!(ax.labels(), &[1, 5]);
 
-        cat.union_axis(&Axis::new("uyiuyoiuy", vec![0, 5]).unwrap())
+        txn.union_axis(&Axis::new("uyiuyoiuy", vec![0, 5]).unwrap())
             .expect("Union should append");
-        ax = cat.get_axis("uyiuyoiuy").unwrap();
+        let ax = txn.get_axis("uyiuyoiuy").unwrap();
         assert_eq!(ax.labels(), &[1, 5, 0]);
     }
 
     #[test]
     fn test_create_quilt() {
         let cat = Catalog::connect("").unwrap();
+        let txn = cat.begin().unwrap();
         // This should automatically create the axes as well, so it doesn't complain
-        cat.create_quilt("sales", &["itm", "lct", "day"], true)
+        txn.create_quilt("sales", &["itm", "lct", "day"], true)
             .unwrap();
     }
 
     #[test]
     fn test_fetch_commit_fetch() {
         let cat = Catalog::connect("").unwrap();
-        cat.create_quilt("sales", &["itm", "lct", "day"], true)
+        let mut txn = cat.begin().unwrap();
+        txn.create_quilt("sales", &["itm", "lct", "day"], true)
             .unwrap();
 
         // This should assume the axes' labels exist if you specify them, but not if you don't
-        let mut pat = cat
+        let mut pat = txn
             .fetch(
                 "sales",
                 "latest",
@@ -613,10 +544,10 @@ mod tests {
 
         pat.content_mut().fill(1.0);
 
-        cat.commit("sales", "latest", "latest", "message", &[&pat])
+        txn.create_commit("sales", "latest", "latest", "message", &[&pat])
             .unwrap();
 
-        let pat2 = cat
+        let pat2 = txn
             .fetch(
                 "sales",
                 "latest",
@@ -641,10 +572,11 @@ mod tests {
         let master = Array2::from_shape_fn((w, h), |(x, y)| (xs[x] * ys[y]).max(0.0));
         let mut current_state = Array2::zeros((w, h));
 
-        let catalog = Catalog::connect("test-storage.db").unwrap();
-        catalog.create_quilt("quilt", &["x", "y"], true).unwrap();
-        catalog.union_axis(&Axis::range("x", 0..w as i64)).unwrap();
-        catalog.union_axis(&Axis::range("y", 0..h as i64)).unwrap();
+        let cat = Catalog::connect("test-storage.db").unwrap();
+        let mut txn = cat.begin().unwrap();
+        txn.create_quilt("quilt", &["x", "y"], true).unwrap();
+        txn.union_axis(&Axis::range("x", 0..w as i64)).unwrap();
+        txn.union_axis(&Axis::range("y", 0..h as i64)).unwrap();
 
         for _ in 0..256 {
             // Get slices out of the generated matrix and put them into the empty matrix,
@@ -657,7 +589,8 @@ mod tests {
             let mut t = thread_rng();
             let px = t.gen_range(0, w);
             let py = t.gen_range(0, h);
-            let pxe = t.gen_range(px, w.min(px + 1000));
+            // This +1 is because inclusive label slicing makes empty slices impossible
+            let pxe = t.gen_range(px + 1, w.min(px + 1000));
             let pye = t.gen_range(py, h.min(py + 1000));
 
             println!(
@@ -682,11 +615,10 @@ mod tests {
                 .content(content.to_owned().into_dyn())
                 .unwrap();
 
-            catalog
-                .commit("quilt", "latest", "latest", "hi", &[&patch])
+            txn.create_commit("quilt", "latest", "latest", "hi", &[&patch])
                 .unwrap();
 
-            let fetched_patch = catalog
+            let fetched_patch = txn
                 .fetch(
                     "quilt",
                     "latest",
