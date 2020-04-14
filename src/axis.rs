@@ -1,16 +1,26 @@
 use crate::{Fallible, Label, StoiError};
 use std::collections::HashSet;
 use std::convert::{From, TryFrom};
+use std::fmt;
 
 /// A sequence of distinct signed integer labels uniquely mapping to indices of an axis
 ///
 ///  - In a dense patch, it represents the storage order along one dimension
 ///  - In a catalog, it determines storage order for all the quilts
 ///  - If fully sparse patches are supported in the future, axes may then be permitted to repeat
-#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone)]
 pub struct Axis {
     pub name: String,
     labels: Vec<Label>,
+}
+impl fmt::Debug for Axis {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
+        f.debug_struct("Axis")
+            .field("name", &self.name)
+            .field("labels", &&self.labels[..3])
+            .finish()?;
+        Ok(())
+    }
 }
 impl Axis {
     /// Create a new named axis with a set of labels

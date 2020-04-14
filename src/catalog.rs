@@ -2,7 +2,7 @@ use crate::sqlite::{SQLiteConnection, SQLiteTransaction};
 use crate::Fallible;
 use crate::Label;
 use itertools::Itertools;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, BTreeMap};
 use std::convert::{TryFrom, TryInto};
 use std::sync::Arc;
 
@@ -30,20 +30,8 @@ impl Catalog {
     }
 
     /// Start a new transaction on the quilt
-    pub fn begin(&self) -> Fallible<SQLiteTransaction> {
+    pub fn begin(&mut self) -> Fallible<SQLiteTransaction> {
         self.storage.txn()
-    }
-
-    /// Untag a commit, to "delete" it
-    ///
-    /// Untagging a commit doesn't remove its effects, it only makes it inaccessible
-    /// and allows (now or any time in the future) for the library to:
-    ///
-    /// - Merge it into its successots, if it has any
-    /// - Garbage collect it otherwise
-    pub fn untag(&self, _quilt_name: &str, _tag: &str) -> Fallible<()> {
-        // TODO: Implement untag
-        Ok(())
     }
 }
 
@@ -54,19 +42,21 @@ pub trait StorageConnection: Send + Sync {
 
 /// A connection to tensor storage
 pub trait StorageTransaction {
+    /// Increment a counter by name, used for performance statistics
+    fn trace(&mut self, name: &'static str, increment: usize);
     /// Get only the metadata associated with a quilt by name
-    fn get_quilt_details(&self, quilt_name: &str) -> Fallible<QuiltDetails>;
+    fn get_quilt_details(&mut self, quilt_name: &str) -> Fallible<QuiltDetails>;
 
     /// Create a new quilt (doesn't create associated axes)
     fn create_quilt(
-        &self,
+        &mut self,
         quilt_name: &str,
         axes_names: &[&str],
         ignore_if_exists: bool,
     ) -> Fallible<()>;
 
     /// List all the quilts in the catalog
-    fn list_quilts(&self) -> Fallible<HashMap<String, QuiltDetails>>;
+    fn list_quilts(&mut self) -> Fallible<HashMap<String, QuiltDetails>>;
 
     /// List all the patches that intersect a bounding box
     ///
@@ -76,7 +66,7 @@ pub trait StorageTransaction {
     /// This method exists in case the database supports efficient multidimensional range queries
     /// such as SQLite or Postgres/PostGIS
     fn get_patches_by_bounding_boxes(
-        &self,
+        &mut self,
         quilt_name: &str,
         tag: &str,
         deep: bool,
@@ -84,7 +74,7 @@ pub trait StorageTransaction {
     ) -> Fallible<Vec<PatchRef>>;
 
     /// Get a single patch by ID
-    fn get_patch(&self, id: PatchID) -> Fallible<Patch>;
+    fn get_patch(&mut self, id: PatchID) -> Fallible<Patch>;
 
     /// Get all the labels of an axis, in the order you would expect them to be stored.
     /// 
@@ -110,6 +100,7 @@ pub trait StorageTransaction {
         message: &str,
         patches: &[&Patch],
     ) -> Fallible<()> {
+        self.trace("create_commit", 1);
         // Check that the axes are consistent
         let quilt_details = self.get_quilt_details(quilt_name)?;
         for patch in patches {
@@ -182,6 +173,7 @@ pub trait StorageTransaction {
         name: &str,
         sel: AxisSelection,
     ) -> Fallible<(Axis, Vec<AxisSegment>)> {
+        self.trace("get_axis_from_selection", 1);
         Ok(match sel {
             AxisSelection::All => {
                 let axis = self.get_axis(&name)?;
@@ -248,6 +240,7 @@ pub trait StorageTransaction {
         tag: &str,
         mut request: Vec<AxisSelection>,
     ) -> Fallible<Patch> {
+        self.trace("fetch", 1);
         if request.is_empty() {
             return Err(StoiError::InvalidValue(
                 "Patches must have at least one axis",
@@ -345,11 +338,13 @@ pub trait StorageTransaction {
     ///     Either: A vec with one element, which is a Cow::Borrowed(&self)
     ///     Or: A vec with 2+ elements, which are all Cow::Owned(Patch)
     fn maybe_split(&mut self, original: Patch) -> Fallible<Vec<Patch>> {
+        self.trace("maybe_split", 1);
         match original.content().len() {
             0 => Ok(vec![]),                   // Take out the trash
             1..=1048576 => Ok(vec![original]), // Cap at 4 MB
             _ => {
                 // Split everything else
+                self.trace("maybe_split split", 1);
 
                 // Split it along it's longest axis
                 let (long_ax_ix, long_axis) = original
@@ -421,6 +416,7 @@ pub trait StorageTransaction {
     /// These bounding boxes depend on the storage order of the catalog, so they aren't something
     /// the Patch could know on its own, instead you find this through the catalog
     fn get_bounding_box(&mut self, patch: &Patch) -> Fallible<BoundingBox> {
+        self.trace("get_bounding_box", 1);
         let bbvec = (0..4)
             .map(|ax_ix| match patch.axes().get(ax_ix) {
                 Some(patch_axis) => {
@@ -443,6 +439,24 @@ pub trait StorageTransaction {
             .collect::<Fallible<Vec<AxisSegment>>>()?;
         Ok(bbvec[..].try_into()?)
     }
+
+
+    /// Untag a commit, to "delete" it
+    ///
+    /// Untagging a commit doesn't remove its effects, it only makes it inaccessible
+    /// and allows (now or any time in the future) for the library to:
+    ///
+    /// - Merge it into its successors, if it has any
+    /// - Garbage collect it otherwise
+    fn untag(&self, _quilt_name: &str, _tag: &str) -> Fallible<()> {
+        // TODO: Implement untag
+        Ok(())
+    }
+
+    /// Retrieve performance counters, useful for debugging performance problems
+    /// 
+    /// Returns: a Map containing the counters by name
+    fn get_performance_counters(&self) -> BTreeMap<&'static str, usize>;
 }
 
 /// Metadata about a quilt
@@ -467,11 +481,12 @@ impl TryFrom<&rusqlite::Row<'_>> for QuiltDetails {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Axis, AxisSelection, Catalog, Label, Patch, StorageTransaction};
+    use crate::{Axis, AxisSelection, Catalog, ContentPattern, Label, Patch, StorageTransaction};
+    use itertools::Itertools;
 
     #[test]
     fn test_create_axis() {
-        let cat = Catalog::connect("").unwrap();
+        let mut cat = Catalog::connect("").unwrap();
         let mut txn = cat.begin().unwrap();
 
         let ax = txn
@@ -509,16 +524,17 @@ mod tests {
 
     #[test]
     fn test_create_quilt() {
-        let cat = Catalog::connect("").unwrap();
-        let txn = cat.begin().unwrap();
+        let mut cat = Catalog::connect("").unwrap();
+        let mut txn = cat.begin().unwrap();
         // This should automatically create the axes as well, so it doesn't complain
         txn.create_quilt("sales", &["itm", "lct", "day"], true)
             .unwrap();
     }
-
+    /// Fetching from an empty quilt should create an empty patch
+    /// but fetching from a filled area should retrieve the content of that area.
     #[test]
     fn test_fetch_commit_fetch() {
-        let cat = Catalog::connect("").unwrap();
+        let mut cat = Catalog::connect("").unwrap();
         let mut txn = cat.begin().unwrap();
         txn.create_quilt("sales", &["itm", "lct", "day"], true)
             .unwrap();
@@ -561,75 +577,72 @@ mod tests {
     /// Check that the state of the quilt is consistent as we keep adding patches and commits
     #[test]
     fn test_autogenerated_commit_fetch() {
-        use ndarray::{Array1, Array2};
         use rand::prelude::*;
 
         // Needs to be large enough to require multiple patches,
         // and patches can reasonably contain 1000x1000 elements
-        let (w, h) = (12722, 5292);
-        let xs = Array1::linspace(1.0f32, 100.0, w).mapv_into(|x| x.sin());
-        let ys = Array1::linspace(1.0f32, 100.0, h).mapv_into(|x| x.cos());
-        let master = Array2::from_shape_fn((w, h), |(x, y)| (xs[x] * ys[y]).max(0.0));
-        let mut current_state = Array2::zeros((w, h));
+        let (w, h) = (10000, 10000);
+        let master = Patch::autogenerate(ContentPattern::Sparse, 10000);
+        let master_content = master.content();
 
-        let cat = Catalog::connect("test-storage.db").unwrap();
+        let mut cat = Catalog::connect("").unwrap();
         let mut txn = cat.begin().unwrap();
         txn.create_quilt("quilt", &["x", "y"], true).unwrap();
         txn.union_axis(&Axis::range("x", 0..w as i64)).unwrap();
         txn.union_axis(&Axis::range("y", 0..h as i64)).unwrap();
+        //txn.finish().unwrap();
 
-        for _ in 0..256 {
-            // Get slices out of the generated matrix and put them into the empty matrix,
-            // then check them against the catalog.
-            // To make this more fun, the first axis uses inclusive label based indexing,
-            // but the second axis uses open-closed storage-index based indexing.
-            // As long as we provide the axes first, this should be fine.
+        //let mut txn = cat.begin().unwrap();
+        // Sixteen transactions
+        for _ in 0..16 {
+            // Of sixteen commits
+            for _ in 0..16 {
+                // Get slices out of the generated matrix and put them into the empty matrix,
+                // then check them against the catalog.
+                // To make this more fun, the first axis uses inclusive label based indexing,
+                // but the second axis uses open-closed storage-index based indexing.
+                // As long as we provide the axes first, this should be fine.
 
-            // All four of px, pxe, py, pye use [x,y) inclusiveness
-            let mut t = thread_rng();
-            let px = t.gen_range(0, w);
-            let py = t.gen_range(0, h);
-            // This +1 is because inclusive label slicing makes empty slices impossible
-            let pxe = t.gen_range(px + 1, w.min(px + 1000));
-            let pye = t.gen_range(py, h.min(py + 1000));
+                // All four of px, pxe, py, pye use [x,y) inclusiveness
+                let mut t = thread_rng();
+                let px: usize = t.gen_range(0, w-100);
+                let py: usize = t.gen_range(0, h-100);
+                // This +1 is because inclusive label slicing makes empty slices impossible
+                let pxe = px + t.gen_range(1, (w-px).min(1000));
+                let pye = py + t.gen_range(1, (h-py).min(1000));
 
-            println!(
-                "px {}, pxe {}, py {}, pye {}, w {}, h {}",
-                px,
-                pxe,
-                py,
-                pye,
-                pxe - px,
-                pye - py
-            );
+                // with 16 patches
+                let mut patches = vec![];
+                for _ in 0..16 {
+                    let content = master_content.slice(s![px..pxe, py..pye]);
+                    // These two ranges are [x,y)
+                    let patch = Patch::build()
+                        .axis_range("x", px as i64..pxe as i64)
+                        .axis_range("y", py as i64..pye as i64)
+                        .content(content.to_owned().into_dyn())
+                        .unwrap();
+                    patches.push(patch);
+                }
 
-            let content = master.slice(s![px..pxe, py..pye]);
-            current_state
-                .slice_mut(s![px..pxe, py..pye])
-                .assign(&content);
+                txn.create_commit("quilt", "latest", "latest", "hi", &patches.iter().collect_vec()[..])
+                    .unwrap();
 
-            // These two ranges are [x,y)
-            let patch = Patch::build()
-                .axis_range("x", px as i64..pxe as i64)
-                .axis_range("y", py as i64..pye as i64)
-                .content(content.to_owned().into_dyn())
-                .unwrap();
-
-            txn.create_commit("quilt", "latest", "latest", "hi", &[&patch])
-                .unwrap();
-
-            let fetched_patch = txn
-                .fetch(
-                    "quilt",
-                    "latest",
-                    vec![
-                        // Only label slice is inclusive
-                        AxisSelection::LabelSlice(px as i64, -1 + pxe as i64),
-                        AxisSelection::StorageSlice(py, pye),
-                    ],
-                )
-                .unwrap();
-            assert_abs_diff_eq!(patch.content(), fetched_patch.content())
+                // let fetched_patch = txn
+                //     .fetch(
+                //         "quilt",
+                //         "latest",
+                //         vec![
+                //             // Only label slice is inclusive
+                //             AxisSelection::LabelSlice(px as i64, -1 + pxe as i64),
+                //             AxisSelection::StorageSlice(py, pye),
+                //         ],
+                //     )
+                //     .unwrap();
+                // let mean_nonnan_err = (&patch.content() - &fetched_patch.content())
+                //     .fold_skipnan((0., 0.), |(c, a), x| (c+1., a+x.raw().abs()));
+                // assert!((mean_nonnan_err.1 / mean_nonnan_err.0.max(1.)) < 0.001);
+            }
         }
+        txn.finish().unwrap();
     }
 }
