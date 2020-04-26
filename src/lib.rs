@@ -77,3 +77,17 @@ pub(crate) type AxisSegment = (usize, usize);
 /// Remember that in these boxes, storage indices (usize) are always consecutive,
 /// but labels (i64) may not be.
 pub(crate) type BoundingBox = [AxisSegment; 4];
+
+/// Performance metrics
+///
+/// In most cases you should treat these as implementation details
+/// but for debugging performance problems it can be quite valuable.
+/// Use these with transaction method get_performance_counters()
+pub enum Counter {
+    ReadAxis,
+    ReadPatch,
+    WritePatch,
+    SearchPatches,
+    ReadBytes,
+    WriteBytes,
+}

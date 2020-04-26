@@ -162,6 +162,9 @@ pub trait StorageTransaction {
         patches: &[&Patch],
     ) -> Fallible<()>;
 
+    /// Rollback the transaction
+    fn rollback(self) -> Fallible<()>;
+
     /// Finish and commit the transaction successfully
     fn finish(self) -> Fallible<()>;
 
@@ -241,11 +244,6 @@ pub trait StorageTransaction {
         mut request: Vec<AxisSelection>,
     ) -> Fallible<Patch> {
         self.trace("fetch", 1);
-        if request.is_empty() {
-            return Err(StoiError::InvalidValue(
-                "Patches must have at least one axis",
-            ));
-        }
 
         //
         // Find all the labels of the axes they are planning to use
@@ -267,6 +265,7 @@ pub trait StorageTransaction {
             axes.push(axis);
             segments_by_axis.push(segments);
         }
+        assert!(axes.len() >= 1, StoiError::MisalignedAxes("No axes for quilt in fetch()".into()));
 
         // At this point we know how big the output will be.
         // The error here is early to avoid the IO
@@ -481,46 +480,8 @@ impl TryFrom<&rusqlite::Row<'_>> for QuiltDetails {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Axis, AxisSelection, Catalog, ContentPattern, Label, Patch, StorageTransaction};
+    use crate::{Axis, AxisSelection, Catalog, ContentPattern, Patch, StorageTransaction};
     use itertools::Itertools;
-
-    #[test]
-    fn test_create_axis() {
-        let mut cat = Catalog::connect("").unwrap();
-        let mut txn = cat.begin().unwrap();
-
-        let ax = txn
-            .get_axis("xjhdsa")
-            .expect("Getting an empty axis should be fine");
-        assert!(ax.labels() == &[] as &[Label]);
-
-        let ref ax = Axis::new("uyiuyoiuy", vec![1, 5]).expect("Should be able to create an axis");
-
-        // Union an axis
-        txn.union_axis(&ax)
-            .expect("Should be able to create an axis by union");
-        let ax = txn
-            .get_axis("uyiuyoiuy")
-            .expect("Axis should exist after union")
-            .to_owned();
-        // Note how we had to clone the axis. This is interesting, and for good reason!
-        // Unioning an axis would cause any existing axes to possibly be invalidated.
-        // So you can't union while there are still any references to Axes.
-        // Your axes can only be out of date if you make a copy. And in this case, we
-        // have chosen to do that.
-        assert_eq!(ax.labels(), &[1, 5]);
-
-        txn.union_axis(&ax).expect("Union twice is a no-op");
-        let ax = txn
-            .get_axis("uyiuyoiuy")
-            .expect("Axis should still exist after second union");
-        assert_eq!(ax.labels(), &[1, 5]);
-
-        txn.union_axis(&Axis::new("uyiuyoiuy", vec![0, 5]).unwrap())
-            .expect("Union should append");
-        let ax = txn.get_axis("uyiuyoiuy").unwrap();
-        assert_eq!(ax.labels(), &[1, 5, 0]);
-    }
 
     #[test]
     fn test_create_quilt() {
@@ -531,16 +492,15 @@ mod tests {
             .unwrap();
     }
     /// Fetching from an empty quilt should create an empty patch
-    /// but fetching from a filled area should retrieve the content of that area.
     #[test]
-    fn test_fetch_commit_fetch() {
+    fn test_fetch_empty_quilt() {
         let mut cat = Catalog::connect("").unwrap();
         let mut txn = cat.begin().unwrap();
         txn.create_quilt("sales", &["itm", "lct", "day"], true)
             .unwrap();
 
         // This should assume the axes' labels exist if you specify them, but not if you don't
-        let mut pat = txn
+        let pat = txn
             .fetch(
                 "sales",
                 "latest",
@@ -550,33 +510,131 @@ mod tests {
         // We asked for two dimensions but any dimensions you missed will be tacked on
         assert_eq!(pat.ndim(), 3);
         assert_eq!(pat.content().shape(), &[0, 1, 0]);
-
-        pat = Patch::build()
-            .axis_range("itm", 9..12)
-            .axis_range("lct", 2..4)
-            .axis("day", &[700])
-            .content(None)
-            .unwrap();
-
-        pat.content_mut().fill(1.0);
-
-        txn.create_commit("sales", "latest", "latest", "message", &[&pat])
-            .unwrap();
-
-        let pat2 = txn
-            .fetch(
-                "sales",
-                "latest",
-                vec![AxisSelection::All, AxisSelection::All, AxisSelection::All],
-            )
-            .unwrap();
-
-        assert_eq!(pat.content(), pat2.content());
     }
+    /// Commit one patch to the quilt and check that it survives a round trip
+    #[test]
+    fn test_commit_first_patches() {
+        let mut cat = Catalog::connect("").unwrap();
+        let mut txn = cat.begin().unwrap();
+        txn.create_quilt("sales", &["dim0", "dim1"], true)
+            .unwrap();
+
+        //
+        // 1: Does commit + fetch work?
+        //
+        
+        // Check that the quilt details match what we just posted
+        assert_eq!(
+            txn.get_quilt_details("sales").unwrap().axes,
+            vec!["dim0".to_string(), "dim1".to_string()]
+        );
+        
+        // Commit a patch
+        let mut reference_patch = Patch::autogenerate(ContentPattern::Random, 5);
+        txn.create_commit("sales", "latest", "latest", "message", &[&reference_patch])
+            .unwrap();
+        
+        // Check that the first patch was saved correctly
+        let output_patch = txn
+            .fetch("sales", "latest", vec![])
+            .unwrap();
+        assert_eq!(reference_patch.content(), output_patch.content());
+
+        //
+        // 2. Does overwriting work?
+        //
+
+        // Commit another patch over the same spot
+        // If we just used another random patch it would be somewhere else
+        // So instead we set the content of our first patch.
+        let temp_reference_patch = Patch::autogenerate(ContentPattern::Random, 5);
+        // This direct assignment ignores label alignment.
+        reference_patch.content_mut().assign(&temp_reference_patch.content());
+        txn.create_commit("sales", "latest", "latest", "message", &[&reference_patch])
+            .unwrap();
+
+        // We should see only the new patch because it occludes the first one totally
+        let output_patch = txn
+            .fetch("sales", "latest", vec![])
+            .unwrap();
+        assert_eq!(reference_patch.content(), output_patch.content());
+
+
+        //
+        // 3. Do transactions work?
+        //
+
+        // Commit the transaction and nothing should have changed
+        txn.finish().unwrap();
+        let mut txn = cat.begin().unwrap();
+        let output_patch = txn
+            .fetch("sales", "latest", vec![])
+            .unwrap();
+        assert_eq!(reference_patch.content(), output_patch.content());
+
+        // Duplicate of the first round of overwriting
+        // Commit another patch that occludes it totally.
+        // This time we're testing that multiple transactions work too.
+        let temp_reference_patch = Patch::autogenerate(ContentPattern::Random, 5);
+        reference_patch.content_mut().assign(&temp_reference_patch.content());
+        txn.create_commit("sales", "latest", "latest", "message", &[&reference_patch])
+            .unwrap();
+        let output_patch = txn
+            .fetch("sales", "latest", vec![])
+            .unwrap();
+        assert_eq!(reference_patch.content(), output_patch.content());
+        txn.finish().unwrap();
+
+        // Another duplicate of overwriting, this time we rollback
+        let mut txn = cat.begin().unwrap();
+        let temp_reference_patch = Patch::autogenerate(ContentPattern::Random, 5);
+        let mut rollback_reference_patch = reference_patch.clone();
+        rollback_reference_patch.content_mut().assign(&temp_reference_patch.content());
+        txn.create_commit("sales", "latest", "latest", "message", &[&rollback_reference_patch])
+            .unwrap();
+        txn.rollback().unwrap(); // Oopsie, undo!
+        let mut txn = cat.begin().unwrap();
+        let output_patch = txn
+            .fetch("sales", "latest", vec![])
+            .unwrap();
+        // Should be back to before
+        assert_eq!(reference_patch.content(), output_patch.content());
+
+        //
+        // 4. Do transactions rollback
+        //
+
+
+
+    }
+
+    /// Test that fetches incur the right number of reads (low read amplification)
+    #[test]
+    #[ignore]
+    fn test_read_amplification() {
+        let mut cat = populate_quilt();
+        let mut txn = cat.begin().unwrap();
+        txn.fetch("quilt", "latest",
+            vec![
+                // Only label slice is inclusive
+                AxisSelection::LabelSlice(0, 100),
+                AxisSelection::StorageSlice(0, 100),
+            ],
+        ).unwrap();
+        let ctr = txn.get_performance_counters();
+        // It could be done in 1, so cap it at 4.
+        println!("{:?}", ctr);
+        assert!(ctr["get_patch"] <= 4);
+    }
+
 
     /// Check that the state of the quilt is consistent as we keep adding patches and commits
     #[test]
-    fn test_autogenerated_commit_fetch() {
+    #[ignore]
+    fn test_populate_quilt() {
+        populate_quilt();
+    }
+    fn populate_quilt() -> Catalog {
         use rand::prelude::*;
 
         // Needs to be large enough to require multiple patches,
@@ -593,10 +651,10 @@ mod tests {
         //txn.finish().unwrap();
 
         //let mut txn = cat.begin().unwrap();
-        // Sixteen transactions
-        for _ in 0..16 {
-            // Of sixteen commits
-            for _ in 0..16 {
+        // eight transactions
+        for _ in 0..8 {
+            // Of eight commits
+            for _ in 0..8 {
                 // Get slices out of the generated matrix and put them into the empty matrix,
                 // then check them against the catalog.
                 // To make this more fun, the first axis uses inclusive label based indexing,
@@ -611,9 +669,9 @@ mod tests {
                 let pxe = px + t.gen_range(1, (w-px).min(1000));
                 let pye = py + t.gen_range(1, (h-py).min(1000));
 
-                // with 16 patches
+                // with 8 patches
                 let mut patches = vec![];
-                for _ in 0..16 {
+                for _ in 0..8 {
                     let content = master_content.slice(s![px..pxe, py..pye]);
                     // These two ranges are [x,y)
                     let patch = Patch::build()
@@ -644,5 +702,6 @@ mod tests {
             }
         }
         txn.finish().unwrap();
+        cat
     }
 }

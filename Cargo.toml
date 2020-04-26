@@ -5,7 +5,7 @@ authors = ["Sean Gallagher <stgallag@gmail.com>"]
 edition = "2018"
 
 [lib]
-crate-type = ["cdylib", "lib"]
+crate-type = ["lib", "cdylib"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -31,6 +31,7 @@ lz4 = "1.23.1"
 arrayvec = "0.5.1"
 ndarray-stats = "0.3.0"
 noisy_float = "0.1.12"
+enum-map = "0.6.2"
 
 
 [features]

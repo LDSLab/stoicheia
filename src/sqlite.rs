@@ -496,11 +496,16 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         Ok(())
     }
 
-    /// Commit the transaction within
-    
+    /// Commit the transaction
     fn finish(self) -> Fallible<()> {
         println!("Transaction completed with stats {:#?}", self.trace);
         Ok(self.txn.execute_batch("COMMIT;")?)
+    }
+
+    /// Rollback the transaction
+    fn rollback(self) -> Fallible<()> {
+        println!("Transaction rolled back with stats {:#?}", self.trace);
+        Ok(self.txn.execute_batch("ROLLBACK;")?)
     }
 }
 

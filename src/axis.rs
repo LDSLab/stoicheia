@@ -115,6 +115,29 @@ impl Axis {
             .for_each(|label| self.labels.push(*label));
         mutated
     }
+
+    /// Find the smallest aligned power-of-two block enclosing an interval.
+    /// 
+    /// Accepts:
+    ///     start: an index (not label) included in the interval
+    ///     end_inclusive: an index (not label) at the end of the interval
+    /// 
+    /// Returns:
+    ///     (S, E) where:
+    ///         -   S is the beginning of a block, inclusive
+    ///         -   E is the end of a block, inclusive
+    ///         -   E-S is a power of two
+    ///         -   S is divisible by E-S
+    ///         -   S <= start <= end_exclusive <= E
+    pub(crate) fn get_block(start: u64, end_inclusive: u64) -> (u64, u64) {
+        if start == end_inclusive {
+            (start, start)
+        } else {
+            let prefix_len = (start ^ end_inclusive).leading_zeros();
+            let prefix_mask = u64::max_value() >> prefix_len;
+            (start & ! prefix_mask, start | prefix_mask)
+        }
+    }
 }
 
 impl From<&Axis> for Axis {
@@ -127,5 +150,57 @@ impl<L: IntoIterator<Item = Label>> TryFrom<(&str, L)> for Axis {
     type Error = StoiError;
     fn try_from(x: (&str, L)) -> Result<Self, StoiError> {
         Axis::new(x.0, x.1.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Axis, Catalog, Label, StorageTransaction};
+
+    #[test]
+    fn test_create_axis() {
+        let mut cat = Catalog::connect("").unwrap();
+        let mut txn = cat.begin().unwrap();
+
+        let ax = txn
+            .get_axis("xjhdsa")
+            .expect("Getting an empty axis should be fine");
+        assert!(ax.labels() == &[] as &[Label]);
+
+        let ref ax = Axis::new("uyiuyoiuy", vec![1, 5]).expect("Should be able to create an axis");
+
+        // Union an axis
+        txn.union_axis(&ax)
+            .expect("Should be able to create an axis by union");
+        let ax = txn
+            .get_axis("uyiuyoiuy")
+            .expect("Axis should exist after union")
+            .to_owned();
+        // Note how we had to clone the axis. This is interesting, and for good reason!
+        // Unioning an axis would cause any existing axes to possibly be invalidated.
+        // So you can't union while there are still any references to Axes.
+        // Your axes can only be out of date if you make a copy. And in this case, we
+        // have chosen to do that.
+        assert_eq!(ax.labels(), &[1, 5]);
+
+        txn.union_axis(&ax).expect("Union twice is a no-op");
+        let ax = txn
+            .get_axis("uyiuyoiuy")
+            .expect("Axis should still exist after second union");
+        assert_eq!(ax.labels(), &[1, 5]);
+
+        txn.union_axis(&Axis::new("uyiuyoiuy", vec![0, 5]).unwrap())
+            .expect("Union should append");
+        let ax = txn.get_axis("uyiuyoiuy").unwrap();
+        assert_eq!(ax.labels(), &[1, 5, 0]);
+    }
+
+    #[test]
+    fn test_split_patch() {
+        assert_eq!(Axis::get_block(8, 10), (8, 11));
+        assert_eq!(Axis::get_block(7, 10), (0, 15));
+        assert_eq!(Axis::get_block(6, 9), (0, 15));
+        assert_eq!(Axis::get_block(10, 10), (10, 10));
+        assert_eq!(Axis::get_block(0, 0), (0, 0));
     }
 }
