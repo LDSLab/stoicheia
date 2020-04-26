@@ -1,14 +1,16 @@
 use crate::catalog::{StorageConnection, StorageTransaction};
 use crate::patch::PatchCompressionType;
 use crate::{
-    Axis, AxisSelection, BoundingBox, Fallible, Patch, PatchID, PatchRef, QuiltDetails, StoiError,
+    Axis, AxisSelection, BoundingBox, Counter, Fallible, Patch, PatchID, PatchRef, QuiltDetails,
+    StoiError,
 };
 use itertools::Itertools;
 use rusqlite::{OptionalExtension, ToSql, NO_PARAMS};
-use std::collections::{HashMap, BTreeMap};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
+use enum_map::EnumMap;
 
 /// An implementation of tensor storage on SQLite
 pub(crate) struct SQLiteConnection {
@@ -48,7 +50,7 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
                 return Ok(SQLiteTransaction {
                     txn,
                     axis_cache: HashMap::new(),
-                    trace: BTreeMap::new()
+                    trace: EnumMap::new(),
                 });
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(1 << i));
@@ -78,12 +80,17 @@ impl<'t> StorageConnection for &'t SQLiteConnection {
 pub struct SQLiteTransaction<'t> {
     txn: MutexGuard<'t, rusqlite::Connection>,
     axis_cache: HashMap<String, Axis>,
-    trace: BTreeMap<&'static str, usize>
+    trace: EnumMap<Counter, usize>,
 }
 impl<'t> SQLiteTransaction<'t> {
     /// Put patch is only safe to do inside put_commit, so it's not part of Storage
-    fn put_patch(&mut self, comm_id: i64, pat: &Patch, bounding_box: BoundingBox) -> Fallible<PatchID> {
-        self.trace("put_patch", 1);
+    fn put_patch(
+        &mut self,
+        comm_id: i64,
+        pat: &Patch,
+        bounding_box: BoundingBox,
+    ) -> Fallible<PatchID> {
+        self.trace(Counter::WritePatch, 1);
         let patch_id = PatchID(self.gen_id());
         // Note - you need to compact here, quite late, because it needs to be after the Axes are updated.
         // That's because
@@ -127,9 +134,9 @@ impl<'t> SQLiteTransaction<'t> {
     ///
     /// This only makes sense untagg(), and for compaction as part of a commit(),
     /// and you can't do this from outside
-    
+
     fn del_patch(&mut self, patch_id: PatchID) -> Fallible<()> {
-        self.trace("del_patch", 1);
+        self.trace(Counter::DeletePatch, 1);
         self.txn
             .execute("DELETE FROM Patch WHERE patch_id = ?;", &[patch_id])?;
         self.txn
@@ -145,14 +152,14 @@ impl<'t> SQLiteTransaction<'t> {
 
 impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     /// Increment an activity counter, used for performance and correctness checking
-    fn trace(&mut self, name: &'static str, increment: usize) {
-        *self.trace.entry(name).or_default() += increment;
+    fn trace(&mut self, ctr: Counter, increment: usize) {
+        self.trace[ctr] += increment;
     }
 
     /// Retrieve performance counters, useful for debugging performance problems
-    /// 
+    ///
     /// Returns: a Map containing the counters by name
-    fn get_performance_counters(&self) -> BTreeMap<&'static str, usize> {
+    fn get_performance_counters(&self) -> EnumMap<Counter, usize> {
         self.trace.clone()
     }
 
@@ -160,9 +167,8 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     /// Any duplicate labels will not be appended.
     ///
     /// Returns true iff the axis was mutated in the process
-    
+
     fn union_axis(&mut self, axis: &Axis) -> Fallible<bool> {
-        self.trace("union_axis", 1);
         let existing_labels = self.get_axis(&axis.name)?.labelset();
 
         let mut changes = 0;
@@ -185,17 +191,16 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         if changes > 0 {
             // Repair the cache
             self.axis_cache.get_mut(&axis.name).unwrap().union(&axis);
-            self.trace("union_axis changes", changes);
-            self.trace("union_axis trials", trials);
+            self.trace(Counter::WriteAxisLabel, changes);
+            self.trace(Counter::TrialAxisLabel, trials);
         }
         Ok(changes > 0)
     }
 
     /// Get all the labels of an axis, in the order you would expect them to be stored
     fn get_axis(&mut self, axis_name: &str) -> Fallible<&Axis> {
-        self.trace("get_axis", 1);
         if !self.axis_cache.contains_key(axis_name) {
-            self.trace("get_axis read", 1);
+            self.trace(Counter::ReadAxis, 1);
             let mut stmt = self.txn.prepare(
                 "SELECT label FROM AxisContent WHERE axis_name = ? ORDER BY global_storage_index",
             )?;
@@ -212,7 +217,6 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
 
     /// List the currently available quilts
     fn list_quilts(&mut self) -> Fallible<HashMap<String, QuiltDetails>> {
-        self.trace("list_quilts", 1);
         let mut map = HashMap::new();
         for row in self
             .txn
@@ -226,34 +230,19 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     }
 
     /// Create a quilt, and create axes as necessary to make it.
-    ///
-    /// With `ignore_if_exists=true`, you can make this idempotent rather than fail. In either case
-    /// it will not replace or modify an existing quilt.
-    
-    fn create_quilt(
-        &mut self,
-        quilt_name: &str,
-        axes_names: &[&str],
-        ignore_if_exists: bool,
-    ) -> Fallible<()> {
-        self.trace("create_quilt", 1);
-        self.txn.execute(
-            &format!(
-                "INSERT {} INTO quilt(quilt_name, axes) VALUES (?, ?);",
-                if ignore_if_exists { "OR IGNORE" } else { "" }
-            ),
+    fn create_quilt(&mut self, quilt_name: &str, axes_names: &[&str]) -> Fallible<bool> {
+        let changes = self.txn.execute(
+            "INSERT OR IGNORE INTO quilt(quilt_name, axes) VALUES (?, ?);",
             &[&quilt_name, &serde_json::to_string(axes_names)?.as_ref()],
         )?;
-        Ok(())
+        Ok(changes > 0)
     }
 
     /// Get details about a quilt by name
     ///
     /// What details are available may depend on the quilt, and fields are likely to
     /// be added with time (so be careful with serializing QuiltDetails)
-    
     fn get_quilt_details(&mut self, quilt_name: &str) -> Fallible<QuiltDetails> {
-        self.trace("get_quilt_details", 1);
         let deets = self
             .txn
             .query_row_and_then(
@@ -288,15 +277,14 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     ///
     /// Returns:
     ///     A vector of Patch ID's
-    
-    fn get_patches_by_bounding_boxes(
+    fn search(
         &mut self,
         quilt_name: &str,
         tag: &str,
         deep: bool,
         bounding_boxes: &[BoundingBox],
     ) -> Fallible<Vec<PatchRef>> {
-        self.trace("get_patches_by_bounding_box", 1);
+        self.trace(Counter::SearchPatches, 1);
         // This is a fairly complex query we need to run so it deserved long-hand
         let mut stmt = self.txn.prepare(
             "
@@ -386,17 +374,15 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         Ok(patch_refs)
     }
 
-    
     fn get_patch(&mut self, id: PatchID) -> Fallible<Patch> {
-        self.trace("get_patch", 1);
+        self.trace(Counter::ReadPatch, 1);
         let res: Vec<u8> = self.txn.query_row(
             "SELECT content FROM PatchContent WHERE patch_id = ?",
             &[&id],
             |r| r.get(0),
         )?;
-        self.trace("get_patch bytes read", res.len());
+        self.trace(Counter::ReadBytes, res.len());
         let p = Patch::deserialize_from(&res[..])?;
-        self.trace("get_patch elements read", p.len());
         Ok(p)
     }
 
@@ -406,7 +392,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
     ///
     /// This is only available together, so that the underlying storage media can do this
     /// atomically without a complicated API
-    
+
     fn put_commit(
         &mut self,
         quilt_name: &str,
@@ -415,7 +401,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
         message: &str,
         patches: &[&Patch],
     ) -> Fallible<()> {
-        self.trace("put_commit", 1);
+        self.trace(Counter::PutCommit, 1);
         // The heuristic used for balancing may change in the future, but this is my suggestion:
         //
         //     - Take patches from this commit that overlap this patch
@@ -429,7 +415,7 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
             let new_bounding_box = self.get_bounding_box(&pat)?;
             // Find a friend to merge with: choosing the smallest will bring up the tiny patchlets
             let maybe_friend_patch_ref = self
-                .get_patches_by_bounding_boxes(quilt_name, new_tag, false, &[new_bounding_box])?
+                .search(quilt_name, new_tag, false, &[new_bounding_box])?
                 .into_iter()
                 // TODO: Consider percent overlap
                 .min_by_key(|patch_ref| patch_ref.decompressed_size);
@@ -442,14 +428,14 @@ impl<'t> StorageTransaction for SQLiteTransaction<'t> {
                     // We get the friend first because counter-intuitively, it's faster.
                     // In most cases the friend will not cover it's whole bounding box so it's
                     // much more efficient to create a selection from the friend instead.
-                    self.trace("put_commit get_patch", 1);
+                    self.trace(Counter::PutCommitGetPatch, 1);
                     let friend = self.get_patch(friend_patch_ref.id)?;
                     let patch_request = friend
                         .axes()
                         .iter()
                         .map(|ax| AxisSelection::Labels(ax.labels().to_vec()))
                         .collect_vec();
-                    self.trace("put_commit fetch", 1);
+                    self.trace(Counter::PutCommitFetch, 1);
                     let friend_visible_area = self.fetch(quilt_name, new_tag, patch_request)?;
                     // Garbage collect the old patch because now it has been compacted into the new one
                     self.del_patch(friend_patch_ref.id)?;

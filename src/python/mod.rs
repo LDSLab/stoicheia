@@ -7,7 +7,7 @@
 //! cat = Catalog("example.db")
 //! ```
 use crate::error::StoiError;
-use crate::{StorageTransaction};
+use crate::StorageTransaction;
 use itertools::Itertools;
 use ndarray::prelude::*;
 use numpy::{IntoPyArray, PyArrayDyn};

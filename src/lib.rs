@@ -11,7 +11,7 @@ extern crate rusqlite as sql;
 extern crate approx; // for approximately eq for f32/f64
 
 mod patch;
-pub use patch::{Patch, PatchCompressionType, ContentPattern};
+pub use patch::{ContentPattern, Patch, PatchCompressionType};
 
 mod catalog;
 pub use catalog::{Catalog, QuiltDetails, StorageTransaction};
@@ -83,11 +83,50 @@ pub(crate) type BoundingBox = [AxisSegment; 4];
 /// In most cases you should treat these as implementation details
 /// but for debugging performance problems it can be quite valuable.
 /// Use these with transaction method get_performance_counters()
+#[derive(PartialEq, Eq, Debug, Clone, Copy, enum_map::Enum)]
 pub enum Counter {
+    /// An axis was deserialized.
+    /// This typically runs ~100MB/s so it's modestly expensive.
     ReadAxis,
+    /// An axis label was serialized.
+    /// Axes store labels individually so the whole axis isn't serialized at once.
+    /// Instead, we note the number of times an axis label was added
+    WriteAxisLabel,
+    /// The global axis tables were tested for presence of an axis label
+    /// If trials >> writes, then the axis cache is not performing well; likely a bug
+    TrialAxisLabel,
+
+    /// A patch was deserialized.
+    /// This is typically the largest IO. It should be 100+ MB/s but patches are large
     ReadPatch,
+    /// A patch was serialized.
+    /// This can be very slow, even less than 10 MB/s. These should be carefully minimized.
     WritePatch,
+    /// A patch was deleted.
+    /// This is pretty fast and usually indicates rebalancing is going on
+    DeletePatch,
+
+    /// The patch index was searched.
+    /// This is typically fast, but can spike with certain label-based queries
+    /// because they make create very many bounding boxes
     SearchPatches,
+
+    /// Estimated total bytes of IO. (serialized)
     ReadBytes,
+    /// Estimated total bytes of IO. (serialized)
     WriteBytes,
+
+    /// Created a commit
+    CreateCommit,
+    /// Fetched a patch
+    Fetch,
+    /// Resolved an axis selection into a labelset
+    ResolveSelection,
+
+    MaybeSplit,
+    Split,
+    GetBoundingBox,
+    PutCommit,
+    PutCommitGetPatch,
+    PutCommitFetch,
 }

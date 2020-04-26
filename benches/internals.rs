@@ -146,7 +146,9 @@ pub fn bench_commit(c: &mut Criterion) {
         let ref quilt_name = format!("fetch_bench_quilt_{:?}", pattern);
         txn.create_quilt(quilt_name, &["dim0", "dim1"], true)
             .unwrap();
-        let patches: Vec<_> = (0..100).map(|_| Patch::autogenerate(pattern, 1000)).collect();
+        let patches: Vec<_> = (0..100)
+            .map(|_| Patch::autogenerate(pattern, 1000))
+            .collect();
         txn.create_commit(
             quilt_name,
             "latest",
@@ -158,15 +160,17 @@ pub fn bench_commit(c: &mut Criterion) {
 
         group.sample_size(10).bench_function(name, |b| {
             b.iter(|| {
-                black_box(txn.fetch(
-                    quilt_name,
-                    "latest",
-                    black_box(vec![
-                        AxisSelection::StorageSlice(0, 1000),
-                        AxisSelection::StorageSlice(0, 1000),
-                    ]),
+                black_box(
+                    txn.fetch(
+                        quilt_name,
+                        "latest",
+                        black_box(vec![
+                            AxisSelection::StorageSlice(0, 1000),
+                            AxisSelection::StorageSlice(0, 1000),
+                        ]),
+                    )
+                    .unwrap(),
                 )
-                .unwrap())
             })
         });
     }

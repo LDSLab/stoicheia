@@ -117,11 +117,11 @@ impl Axis {
     }
 
     /// Find the smallest aligned power-of-two block enclosing an interval.
-    /// 
+    ///
     /// Accepts:
     ///     start: an index (not label) included in the interval
     ///     end_inclusive: an index (not label) at the end of the interval
-    /// 
+    ///
     /// Returns:
     ///     (S, E) where:
     ///         -   S is the beginning of a block, inclusive
@@ -135,7 +135,7 @@ impl Axis {
         } else {
             let prefix_len = (start ^ end_inclusive).leading_zeros();
             let prefix_mask = u64::max_value() >> prefix_len;
-            (start & ! prefix_mask, start | prefix_mask)
+            (start & !prefix_mask, start | prefix_mask)
         }
     }
 }
